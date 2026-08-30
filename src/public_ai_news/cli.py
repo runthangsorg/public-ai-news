@@ -41,11 +41,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raw = _load_input(args.input)
         
     ranked = rank_items(raw, limit=args.max_items)
-    print(json.dumps(ranked, indent=2, sort_keys=True))
-    
-    # Send email
+    email_sent = False
     if args.config or args.dry_run:
-        send_digest(ranked, dry_run=args.dry_run)
+        email_sent = send_digest(ranked, dry_run=args.dry_run)
+
+    if args.config or args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "dry_run": args.dry_run,
+                    "email_sent": email_sent,
+                    "item_count": len(ranked),
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        print(json.dumps(ranked, indent=2, sort_keys=True))
         
     return 0
 

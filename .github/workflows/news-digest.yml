@@ -7,8 +7,8 @@ on:
     inputs:
       dry_run:
         description: "Dry run (no email)"
-        required: false
-        default: false
+        required: true
+        default: true
         type: boolean
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   digest:
@@ -31,6 +31,7 @@ jobs:
       SMTP_USER: ${{ secrets.SMTP_USER }}
       SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
       REPORT_RECIPIENT: ${{ secrets.REPORT_RECIPIENT }}
+      DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -39,8 +40,11 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run bounded public collector
+        shell: bash
         run: |
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+          set -euo pipefail
+          test -n "${NEWS_SOURCE_CONFIG_JSON}"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${DISPATCH_DRY_RUN}" == "true" ]]; then
             python -m public_ai_news --config --max-items 15 --dry-run
           else
             python -m public_ai_news --config --max-items 15

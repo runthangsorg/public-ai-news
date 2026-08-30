@@ -1,8 +1,14 @@
-"""Email delivery for news digest."""
+"""Email delivery for news digest without leaking runtime data to logs."""
+import html
 import os
 import smtplib
+import ssl
 from email.message import EmailMessage
 from typing import Any, List, Mapping
+
+
+class MailConfigError(RuntimeError):
+    """Raised when a live delivery cannot be configured safely."""
 
 def _build_html(items: List[Mapping[str, Any]]) -> str:
     """Build a dark-themed, email-safe HTML digest."""
@@ -10,22 +16,24 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
     for i, item in enumerate(items, 1):
         score = item.get("score", 0)
         relevance = item.get("relevance", 0)
-        source = item.get("source", "unknown")
-        url = item.get("url", "")
-        title = item.get("title", "Unknown")
+        source = html.escape(str(item.get("source", "unknown")))
+        url = html.escape(str(item.get("url", "")), quote=True)
+        title = html.escape(str(item.get("title", "Unknown")))
+        score_text = html.escape(str(score))
+        relevance_text = html.escape(str(relevance))
 
         items_html += f"""
         <div style="margin-bottom: 16px; padding: 18px; background-color: #1a2332; border: 1px solid #2a3a50; border-radius: 12px;">
             <div style="margin-bottom: 8px;">
                 <span style="display: inline-block; background-color: #0284c7; color: #ffffff; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-right: 6px;">#{i}</span>
                 <span style="display: inline-block; background-color: #1e3a5f; color: #7dd3fc; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-right: 6px;">{source}</span>
-                <span style="display: inline-block; background-color: #14432a; color: #6ee7b7; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px;">Score {score}</span>
+                <span style="display: inline-block; background-color: #14432a; color: #6ee7b7; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px;">Score {score_text}</span>
             </div>
             <h3 style="margin: 0 0 10px 0; font-size: 17px; line-height: 1.4;">
                 <a href="{url}" style="color: #38bdf8; text-decoration: none; font-weight: 600;">{title}</a>
             </h3>
             <div style="font-size: 12px; color: #94a3b8;">
-                Relevance: {relevance} pts · <a href="{url}" style="color: #64748b; text-decoration: underline;">Read article →</a>
+                Relevance: {relevance_text} pts · <a href="{url}" style="color: #64748b; text-decoration: underline;">Read article →</a>
             </div>
         </div>
         """
@@ -47,7 +55,7 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
     </html>
     """
 
-def send_digest(items: List[Mapping[str, Any]], dry_run: bool = False) -> None:
+def send_digest(items: List[Mapping[str, Any]], dry_run: bool = False) -> bool:
     """Send the HTML digest via SMTP."""
     host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SMTP_PORT", 587))
@@ -62,14 +70,10 @@ def send_digest(items: List[Mapping[str, Any]], dry_run: bool = False) -> None:
     )
     
     if dry_run:
-        print("--- DRY RUN: Would send email ---")
-        print(f"Recipient: {recipient}")
-        print(html_content)
-        return
+        return False
         
     if not all([host, port, user, password, recipient]):
-        print("Warning: Missing SMTP credentials. Skipping email delivery.")
-        return
+        raise MailConfigError("SMTP delivery configuration is incomplete")
         
     msg = EmailMessage()
     msg["Subject"] = f"AI News Digest ({len(items)} items)"
@@ -79,6 +83,7 @@ def send_digest(items: List[Mapping[str, Any]], dry_run: bool = False) -> None:
     msg.add_alternative(html_content, subtype="html")
     
     with smtplib.SMTP(host, port) as server:
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
         server.login(user, password)
         server.send_message(msg)
+    return True

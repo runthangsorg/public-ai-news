@@ -17,6 +17,19 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn("upload-artifact", workflow)
         self.assertNotIn("contents: write", workflow)
 
+    def test_ci_is_event_driven_and_production_dispatch_is_safe_by_default(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        production = (ROOT / ".github/workflows/news-digest.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("schedule:", ci)
+        self.assertNotIn("secrets.", ci)
+        self.assertIn("default: true", production)
+        self.assertNotIn("pull_request:", production)
+        self.assertNotIn("push:", production)
+        self.assertNotIn("upload-artifact", production)
+
 
 if __name__ == "__main__":
     unittest.main()
