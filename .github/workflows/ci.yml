@@ -33,5 +33,5 @@ jobs:
       - name: Run synthetic privacy-boundary smoke
         run: python -m public_ai_news --input examples/news.json --max-items 5
       - name: Run bounded public collector
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && vars.ENABLE_NEWS_DIGEST == 'true'
         run: python -m public_ai_news --hacker-news --max-items 5
