@@ -1,0 +1,11 @@
+[project]
+name = "public-ai-news"
+version = "0.1.0"
+description = "Privacy-boundary sanitization and ranking for public AI news"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+public-ai-news = "public_ai_news.cli:main"

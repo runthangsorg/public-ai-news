@@ -1,0 +1,37 @@
+name: bounded-public-ai-news
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PYTHONPATH: src
+    steps:
+      - name: Check out fresh public history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+      - name: Run synthetic privacy-boundary smoke
+        run: python -m public_ai_news --input examples/news.json --max-items 5
+      - name: Run bounded public collector
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: python -m public_ai_news --hacker-news --max-items 5

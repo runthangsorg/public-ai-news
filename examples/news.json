@@ -1,0 +1,14 @@
+[
+  {
+    "title": "Open source LLM inference runtime reduces GPU latency",
+    "url": "https://example.com/ai-runtime?tracking=synthetic",
+    "source": "public-feed",
+    "score": 42
+  },
+  {
+    "title": "A popular but unrelated sandwich thread",
+    "url": "https://example.com/sandwich",
+    "source": "public-feed",
+    "score": 9999
+  }
+]
