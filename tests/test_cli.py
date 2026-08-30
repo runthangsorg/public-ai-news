@@ -19,6 +19,8 @@ class CliTests(unittest.TestCase):
         output = io.StringIO()
         with patch("public_ai_news.cli.fetch_from_config", return_value=[item]), patch(
             "public_ai_news.cli.rank_items", return_value=[item]
+        ), patch(
+            "public_ai_news.cli.enrich_missing_summaries", return_value=[item]
         ), patch("public_ai_news.cli.send_digest", return_value=False), contextlib.redirect_stdout(output):
             result = main(["--config", "--max-items", "15", "--dry-run"])
 

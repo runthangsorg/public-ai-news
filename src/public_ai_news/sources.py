@@ -3,6 +3,11 @@ import json
 import os
 import urllib.request
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from html import unescape
+from html.parser import HTMLParser
 from typing import Any, Callable, List, Mapping, Optional
 from urllib.parse import urlsplit
 
@@ -12,6 +17,146 @@ DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
 
 class SourceConfigError(ValueError):
     """Raised when private runtime source configuration is absent or invalid."""
+
+
+class _TextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+class _ArticleMetadataParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.descriptions: dict[str, str] = {}
+        self.in_paragraph = False
+        self.paragraph_parts: list[str] = []
+        self.paragraphs: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        if tag.lower() == "meta":
+            values = {str(key).lower(): str(value or "") for key, value in attrs}
+            name = (values.get("property") or values.get("name") or "").lower()
+            content = values.get("content", "").strip()
+            if name in {"og:description", "description", "twitter:description"} and content:
+                self.descriptions.setdefault(name, content)
+        elif tag.lower() == "p" and not self.paragraphs:
+            self.in_paragraph = True
+            self.paragraph_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "p" and self.in_paragraph:
+            paragraph = " ".join(" ".join(self.paragraph_parts).split())
+            if len(paragraph) >= 80:
+                self.paragraphs.append(paragraph)
+            self.in_paragraph = False
+
+    def handle_data(self, data: str) -> None:
+        if self.in_paragraph:
+            self.paragraph_parts.append(data)
+
+    def extract(self) -> str:
+        for name in ("og:description", "description", "twitter:description"):
+            if self.descriptions.get(name):
+                return _clean_markup(self.descriptions[name], limit=800)
+        return _clean_markup(self.paragraphs[0], limit=800) if self.paragraphs else ""
+
+
+def _clean_markup(value: Any, *, limit: int = 800) -> str:
+    parser = _TextExtractor()
+    try:
+        parser.feed(unescape(str(value or "")))
+    except Exception:
+        return ""
+    return " ".join(" ".join(parser.parts).split())[:limit].strip()
+
+
+def _published_at(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def _epoch(value: Any) -> str:
+    try:
+        return datetime.fromtimestamp(int(value), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _child_text(node: ET.Element, names: set[str]) -> str:
+    for child in node:
+        if _local_name(child.tag) in names and child.text:
+            return child.text
+    return ""
+
+
+def fetch_article_extract(
+    url: str,
+    *,
+    timeout: int = 7,
+    max_bytes: int = 750_000,
+    opener: Callable = urllib.request.urlopen,
+) -> str:
+    """Fetch only bounded public article metadata for a truthful source extract."""
+    parts = urlsplit(str(url or ""))
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return ""
+    request = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
+    try:
+        with opener(request, timeout=timeout) as response:
+            payload = response.read(max_bytes + 1)
+    except Exception:
+        return ""
+    if len(payload) > max_bytes:
+        return ""
+    parser = _ArticleMetadataParser()
+    try:
+        parser.feed(payload.decode("utf-8", errors="replace"))
+    except Exception:
+        return ""
+    return parser.extract()
+
+
+def enrich_missing_summaries(
+    items: list[Mapping[str, Any]],
+    *,
+    fetcher: Callable[[str], str] = fetch_article_extract,
+    max_fetches: int = 15,
+) -> list[dict[str, Any]]:
+    """Fill missing extracts from bounded article metadata without changing order."""
+    enriched = [dict(item) for item in items]
+    indexes = [
+        index
+        for index, item in enumerate(enriched)
+        if not item.get("summary") and item.get("url")
+    ][: max(0, min(max_fetches, 20))]
+    if not indexes:
+        return enriched
+    workers = min(4, len(indexes))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        extracts = executor.map(lambda index: fetcher(str(enriched[index]["url"])), indexes)
+        for index, extract in zip(indexes, extracts):
+            if extract:
+                enriched[index]["summary"] = _clean_markup(extract, limit=800)
+    return enriched
 
 
 def fetch_hn_algolia(
@@ -38,6 +183,10 @@ def fetch_hn_algolia(
                         "url": item_url,
                         "score": points,
                         "source": "hacker-news",
+                        "summary": _clean_markup(hit.get("story_text")),
+                        "published_at": _published_at(hit.get("created_at")),
+                        "comment_count": hit.get("num_comments") or 0,
+                        "comments_url": f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}",
                     })
     except Exception:
         pass
@@ -67,9 +216,13 @@ def fetch_hacker_news(*, limit: int = 50, opener: Callable = urllib.request.urlo
                 if item and not item.get("deleted"):
                     items.append({
                         "title": item.get("title", ""),
-                        "url": item.get("url", ""),
+                        "url": item.get("url") or f"https://news.ycombinator.com/item?id={item_id}",
                         "score": item.get("score", 0),
                         "source": "hacker-news",
+                        "summary": _clean_markup(item.get("text")),
+                        "published_at": _epoch(item.get("time")),
+                        "comment_count": item.get("descendants") or 0,
+                        "comments_url": f"https://news.ycombinator.com/item?id={item_id}",
                     })
         except Exception:
             continue
@@ -83,8 +236,10 @@ def fetch_rss(
     items = []
     try:
         with opener(req, timeout=12) as response:
-            tree = ET.parse(response)
-            root = tree.getroot()
+            payload = response.read(2_000_001)
+            if len(payload) > 2_000_000:
+                return []
+            root = ET.fromstring(payload)
             count = 0
             
             # Handle RSS 2.0 / 1.0 items
@@ -93,12 +248,22 @@ def fetch_rss(
                     break
                 title = (item.findtext("title") or "").strip()
                 link = (item.findtext("link") or "").strip()
+                if not link:
+                    link = _child_text(item, {"guid"}).strip()
                 if title and link:
                     items.append({
                         "title": title,
                         "url": link,
                         "score": 5,
                         "source": source_name,
+                        "summary": _clean_markup(
+                            _child_text(item, {"description", "summary", "content", "encoded"})
+                        ),
+                        "published_at": _published_at(
+                            _child_text(item, {"pubdate", "published", "updated", "date"})
+                        ),
+                        "comment_count": 0,
+                        "comments_url": "",
                     })
                     count += 1
                     
@@ -119,20 +284,19 @@ def fetch_rss(
                             "url": link,
                             "score": 5,
                             "source": source_name,
+                            "summary": _clean_markup(
+                                _child_text(entry, {"summary", "content", "description"})
+                            ),
+                            "published_at": _published_at(
+                                _child_text(entry, {"published", "updated"})
+                            ),
+                            "comment_count": 0,
+                            "comments_url": "",
                         })
                         count += 1
     except Exception:
         pass
     return items
-
-
-DEFAULT_SOURCES = [
-    {"type": "hn_algolia", "limit": 25},
-    {"type": "rss", "url": "https://huggingface.co/blog/feed.xml", "source": "huggingface", "limit": 10},
-    {"type": "rss", "url": "https://simonwillison.net/tags/ai.atom", "source": "simonwillison", "limit": 10},
-    {"type": "rss", "url": "https://venturebeat.com/category/ai/feed/", "source": "venturebeat", "limit": 10},
-    {"type": "hackernews", "limit": 30},
-]
 
 
 def _bounded_limit(value: Any) -> int:

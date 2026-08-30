@@ -11,9 +11,11 @@ private source configuration, state databases, or generated reports.
 ## Privacy boundary
 
 The accepted input schema is intentionally narrow: title, canonical public
-url, generic source, and numeric score. All other keys are dropped.
-Handles in titles are replaced, URL queries/fragments are removed, and
-private/following source labels become private-bridge.
+article/discussion URLs, generic source label, bounded public source extract,
+publication timestamp, and numeric engagement counts. All other keys are
+dropped. Handles and secret-shaped assignments in text are redacted, URL
+queries/fragments are removed, and private/following source labels become
+`private-bridge`.
 
 An authenticated followed-account collector belongs in a private repository.
 It may pass only these sanitized generic facts to this engine. Do not send a
@@ -30,6 +32,17 @@ The public collector is unauthenticated and time-bounded. Configured production
 runs accept 1–20 bounded public sources through `NEWS_SOURCE_CONFIG_JSON` and
 write structural counts only to Actions logs. Report contents, source choices
 and recipient details are never committed, printed or uploaded as artifacts.
+
+RSS/Atom, Hacker News Algolia, and Hacker News Firebase collectors preserve
+source-provided dates and extracts. After ranking, at most 15 missing extracts
+are filled from bounded public article metadata in four worker threads. No
+article body is copied and no model-written claim is presented as a summary.
+
+Ranking requires a technical signal beyond a company name or the word “AI,”
+rejects recurring chatty/education-marketing patterns, excludes stale dated
+items, prioritizes engineering sources, limits source concentration, and
+clusters near-duplicate cross-source titles. Reports identify every extract as
+source material and provide direct article/discussion actions.
 
 ## GitHub Actions
 

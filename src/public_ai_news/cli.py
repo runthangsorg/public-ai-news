@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .pipeline import rank_items
-from .sources import fetch_hacker_news, fetch_from_config
+from .sources import enrich_missing_summaries, fetch_hacker_news, fetch_from_config
 from .mailer import send_digest
 
 def _load_input(path: str, max_bytes: int = 1_000_000) -> list[dict]:
@@ -41,6 +41,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raw = _load_input(args.input)
         
     ranked = rank_items(raw, limit=args.max_items)
+    if args.config:
+        ranked = enrich_missing_summaries(ranked, max_fetches=args.max_items)
     email_sent = False
     if args.config or args.dry_run:
         email_sent = send_digest(ranked, dry_run=args.dry_run)

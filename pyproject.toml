@@ -1,6 +1,6 @@
 [project]
 name = "public-ai-news"
-version = "0.1.0"
+version = "0.2.0"
 description = "Privacy-boundary sanitization and ranking for public AI news"
 readme = "README.md"
 requires-python = ">=3.9"
