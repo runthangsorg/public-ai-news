@@ -18,6 +18,28 @@ class _Response(io.BytesIO):
 
 
 class HackerNewsSourceTests(unittest.TestCase):
+    def test_algolia_query_is_recent_and_hn_fallback_has_an_id(self):
+        captured = []
+        payload = {
+            "hits": [
+                {
+                    "title": "Recent LLM release",
+                    "objectID": "98765",
+                    "points": 12,
+                }
+            ]
+        }
+
+        def opener(request, timeout):
+            captured.append(request.full_url)
+            return _Response(json.dumps(payload).encode())
+
+        from public_ai_news.sources import fetch_hn_algolia
+
+        items = fetch_hn_algolia(limit=1, opener=opener)
+        self.assertEqual(items[0]["url"], "https://news.ycombinator.com/item?id=98765")
+        self.assertIn("numericFilters", captured[0])
+
     def test_fetch_is_bounded_and_returns_only_generic_fields(self):
         payloads = {
             "https://hacker-news.firebaseio.com/v0/topstories.json": [11, 12, 13],
@@ -112,6 +134,17 @@ class HackerNewsSourceTests(unittest.TestCase):
 
         self.assertEqual(extract, "A technical source extract about GPU inference.")
 
+    def test_article_fetch_rejects_private_host_before_opening(self):
+        def forbidden_opener(*args, **kwargs):
+            raise AssertionError("unsafe URL reached network opener")
+
+        from public_ai_news.sources import fetch_article_extract
+
+        self.assertEqual(
+            fetch_article_extract("http://127.0.0.1/internal", opener=forbidden_opener),
+            "",
+        )
+
     def test_missing_summaries_are_enriched_without_overwriting_feed_extracts(self):
         from public_ai_news.sources import enrich_missing_summaries
 
@@ -156,6 +189,8 @@ class SourceConfigTests(unittest.TestCase):
     def test_config_rejects_private_schemes_and_unknown_fields(self):
         for payload in (
             '[{"type": "rss", "url": "file:///private/feed.xml"}]',
+            '[{"type": "rss", "url": "http://127.0.0.1/feed.xml"}]',
+            '[{"type": "rss", "url": "https://user:pass@example.test/feed.xml"}]',
             '[{"type": "hackernews", "token": "secret"}]',
             '[{"type": "unknown"}]',
         ):

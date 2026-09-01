@@ -1,18 +1,35 @@
 """Fetch news from external sources."""
 import json
+import ipaddress
 import os
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Callable, List, Mapping, Optional
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+
+def _safe_public_url(value: Any) -> bool:
+    parts = urlsplit(str(value or "").strip())
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return False
+    if parts.username or parts.password or not parts.hostname:
+        return False
+    hostname = parts.hostname.lower().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(".local"):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return True
+    return address.is_global
 
 
 class SourceConfigError(ValueError):
@@ -117,7 +134,7 @@ def fetch_article_extract(
 ) -> str:
     """Fetch only bounded public article metadata for a truthful source extract."""
     parts = urlsplit(str(url or ""))
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
+    if not _safe_public_url(url):
         return ""
     request = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
     try:
@@ -166,8 +183,14 @@ def fetch_hn_algolia(
 ) -> list[Mapping[str, Any]]:
     """Fetch recent AI stories from the Hacker News Algolia search API."""
     import urllib.parse
-    encoded_query = urllib.parse.quote_plus(query)
-    url = f"https://hn.algolia.com/api/v1/search_by_date?tags=story&query={encoded_query}&hitsPerPage={limit}"
+    since = int((datetime.now(timezone.utc) - timedelta(days=14)).timestamp())
+    params = {
+        "tags": "story",
+        "query": query,
+        "hitsPerPage": limit,
+        "numericFilters": f"created_at_i>={since}",
+    }
+    url = "https://hn.algolia.com/api/v1/search_by_date?" + urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
     items = []
     try:
@@ -175,7 +198,8 @@ def fetch_hn_algolia(
             data = json.loads(response.read().decode("utf-8"))
             for hit in data.get("hits", []):
                 title = hit.get("title") or ""
-                item_url = hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}"
+                item_id = str(hit.get("objectID") or "").strip()
+                item_url = hit.get("url") or _hn_item_url(item_id)
                 points = hit.get("points") or 1
                 if title and item_url:
                     items.append({
@@ -186,7 +210,7 @@ def fetch_hn_algolia(
                         "summary": _clean_markup(hit.get("story_text")),
                         "published_at": _published_at(hit.get("created_at")),
                         "comment_count": hit.get("num_comments") or 0,
-                        "comments_url": f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}",
+                        "comments_url": _hn_item_url(item_id),
                     })
     except Exception:
         pass
@@ -216,17 +240,25 @@ def fetch_hacker_news(*, limit: int = 50, opener: Callable = urllib.request.urlo
                 if item and not item.get("deleted"):
                     items.append({
                         "title": item.get("title", ""),
-                        "url": item.get("url") or f"https://news.ycombinator.com/item?id={item_id}",
+                        "url": item.get("url") or _hn_item_url(str(item_id)),
                         "score": item.get("score", 0),
                         "source": "hacker-news",
                         "summary": _clean_markup(item.get("text")),
                         "published_at": _epoch(item.get("time")),
                         "comment_count": item.get("descendants") or 0,
-                        "comments_url": f"https://news.ycombinator.com/item?id={item_id}",
+                        "comments_url": _hn_item_url(str(item_id)),
                     })
         except Exception:
             continue
     return items
+
+
+def _hn_item_url(item_id: str) -> str:
+    return (
+        f"https://news.ycombinator.com/item?id={item_id}"
+        if item_id.isdigit()
+        else ""
+    )
 
 
 def fetch_rss(
@@ -353,7 +385,7 @@ def _validated_sources(config_json: str) -> list[dict[str, Any]]:
                 raise SourceConfigError("RSS source contains unknown fields")
             url = str(source.get("url") or "").strip()
             parts = urlsplit(url)
-            if parts.scheme not in {"http", "https"} or not parts.netloc:
+            if not _safe_public_url(url):
                 raise SourceConfigError("RSS source URL must be public HTTP(S)")
             label = " ".join(str(source.get("source") or "rss").split())
             if not 1 <= len(label) <= 80:

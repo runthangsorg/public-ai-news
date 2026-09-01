@@ -29,6 +29,12 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertNotIn("pull_request:", production)
         self.assertNotIn("push:", production)
         self.assertNotIn("upload-artifact", production)
+        self.assertNotIn(
+            "    env:\n      PYTHONPATH: src\n      NEWS_SOURCE_CONFIG_JSON:",
+            production,
+        )
+        self.assertEqual(production.count("NEWS_SOURCE_CONFIG_JSON:"), 1)
+        self.assertLess(production.index("Run safety tests"), production.index("NEWS_SOURCE_CONFIG_JSON:"))
 
 
 if __name__ == "__main__":

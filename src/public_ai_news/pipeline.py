@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import ipaddress
 import re
 from typing import Any, Iterable, Mapping
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 
 SIGNALS = {
@@ -119,9 +120,31 @@ _TECHNICAL_TERMS = {
 def _public_url(value: Any) -> str:
     raw = str(value or "").strip()[:2048]
     parts = urlsplit(raw)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
+    if not _safe_public_url(parts):
+        return ""
+    if parts.netloc.lower() == "news.ycombinator.com" and parts.path == "/item":
+        item_ids = parse_qs(parts.query).get("id", [])
+        if len(item_ids) == 1 and item_ids[0].isdigit():
+            return urlunsplit(
+                (parts.scheme, parts.netloc.lower(), parts.path, urlencode({"id": item_ids[0]}), "")
+            )
         return ""
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+
+
+def _safe_public_url(parts) -> bool:
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return False
+    if parts.username or parts.password or not parts.hostname:
+        return False
+    hostname = parts.hostname.lower().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(".local"):
+        return False
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return True
+    return address.is_global
 
 
 def _source(value: Any) -> str:

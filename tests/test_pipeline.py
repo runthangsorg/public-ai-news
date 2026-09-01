@@ -37,6 +37,28 @@ class SanitizationTests(unittest.TestCase):
         )
         self.assertEqual(clean["url"], "")
 
+    def test_rejects_private_hosts_and_url_credentials(self):
+        for url in (
+            "http://127.0.0.1/internal",
+            "https://localhost/internal",
+            "https://user:password@example.test/article",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(sanitize_item({"title": "AI", "url": url})["url"], "")
+
+    def test_preserves_only_numeric_hacker_news_item_id(self):
+        clean = sanitize_item(
+            {
+                "title": "LLM inference release",
+                "url": "https://news.ycombinator.com/item?id=12345&utm_source=private",
+                "comments_url": "https://news.ycombinator.com/item?id=12345&token=secret",
+                "source": "hacker-news",
+            }
+        )
+        self.assertEqual(clean["url"], "https://news.ycombinator.com/item?id=12345")
+        self.assertEqual(clean["comments_url"], "https://news.ycombinator.com/item?id=12345")
+        self.assertNotIn("token", repr(clean))
+
 
 class RankingTests(unittest.TestCase):
     def test_keeps_ai_engineering_items_and_discards_unrelated_engagement(self):
