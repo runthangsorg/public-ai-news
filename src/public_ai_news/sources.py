@@ -184,37 +184,47 @@ def fetch_hn_algolia(
     """Fetch recent AI stories from the Hacker News Algolia search API."""
     import urllib.parse
     since = int((datetime.now(timezone.utc) - timedelta(days=14)).timestamp())
-    params = {
-        "tags": "story",
-        "query": query,
-        "hitsPerPage": limit,
-        "numericFilters": f"created_at_i>={since}",
-    }
-    url = "https://hn.algolia.com/api/v1/search_by_date?" + urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
-    items = []
-    try:
-        with opener(req, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            for hit in data.get("hits", []):
-                title = hit.get("title") or ""
-                item_id = str(hit.get("objectID") or "").strip()
-                item_url = hit.get("url") or _hn_item_url(item_id)
-                points = hit.get("points") or 1
-                if title and item_url:
-                    items.append({
-                        "title": title,
-                        "url": item_url,
-                        "score": points,
-                        "source": "hacker-news",
-                        "summary": _clean_markup(hit.get("story_text")),
-                        "published_at": _published_at(hit.get("created_at")),
-                        "comment_count": hit.get("num_comments") or 0,
-                        "comments_url": _hn_item_url(item_id),
-                    })
-    except Exception:
-        pass
-    return items
+    subqueries = [part.strip() for part in query.split(" OR ") if part.strip()] or [query]
+    per_query_limit = max(5, min(limit, 25))
+    seen_ids: set[str] = set()
+    items: list[Mapping[str, Any]] = []
+
+    for subquery in subqueries:
+        params = {
+            "tags": "story",
+            "query": subquery,
+            "hitsPerPage": per_query_limit,
+            "numericFilters": f"created_at_i>={since}",
+        }
+        url = "https://hn.algolia.com/api/v1/search_by_date?" + urlencode(params)
+        req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
+        try:
+            with opener(req, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                for hit in data.get("hits", []):
+                    item_id = str(hit.get("objectID") or "").strip()
+                    if not item_id or item_id in seen_ids:
+                        continue
+                    seen_ids.add(item_id)
+                    title = hit.get("title") or ""
+                    item_url = hit.get("url") or _hn_item_url(item_id)
+                    points = hit.get("points") or 1
+                    if title and item_url:
+                        items.append({
+                            "title": title,
+                            "url": item_url,
+                            "score": points,
+                            "source": "hacker-news",
+                            "summary": _clean_markup(hit.get("story_text")),
+                            "published_at": _published_at(hit.get("created_at")),
+                            "comment_count": hit.get("num_comments") or 0,
+                            "comments_url": _hn_item_url(item_id),
+                        })
+        except Exception:
+            pass
+        if len(items) >= limit:
+            break
+    return items[:limit]
 
 
 def fetch_hacker_news(*, limit: int = 50, opener: Callable = urllib.request.urlopen) -> list[Mapping[str, Any]]:
