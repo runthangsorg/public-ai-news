@@ -222,6 +222,71 @@ class SourceConfigTests(unittest.TestCase):
         # X search returns empty list to maintain privacy boundary (no API keys)
         items = _fetch_x_search("AI")
         self.assertEqual(items, [])
+
+    def test_config_accepts_x_timeline_source(self):
+        sources = _validated_sources(
+            '{"sources": [{"type": "x_timeline", "mode": "home", "limit": 12},'
+            ' {"type": "x_timeline", "mode": "profile", "screen_name": "SelRE5", "limit": 8}]}'
+        )
+        self.assertEqual(sources[0]["mode"], "home")
+        self.assertEqual(sources[1]["screen_name"], "SelRE5")
+        with self.assertRaises(SourceConfigError):
+            _validated_sources('{"sources": [{"type": "x_timeline", "mode": "search"}]}')
+        with self.assertRaises(SourceConfigError):
+            _validated_sources('{"sources": [{"type": "x_timeline", "mode": "profile"}]}')
+
+    def test_x_timeline_returns_empty_without_cookies(self):
+        import public_ai_news.sources as sources_module
+        from unittest.mock import patch
+
+        with patch.dict(__import__("os").environ, {}, clear=True):
+            self.assertEqual(sources_module._fetch_x_timeline("home", "", 5), [])
+
+    def test_x_timeline_parses_home_entries(self):
+        import public_ai_news.sources as sources_module
+        from unittest.mock import patch
+
+        payload = {"data": {"home": {"home_timeline_urt": {"instructions": [{
+            "entries": [{
+                "entryId": "tweet-123",
+                "content": {"itemContent": {"tweet_results": {"result": {
+                    "rest_id": "123",
+                    "legacy": {
+                        "full_text": "LLM agents ship code",
+                        "favorite_count": 100,
+                        "reply_count": 9,
+                        "retweet_count": 2,
+                        "created_at": "Sat Sep 20 10:00:00 +0000 2026",
+                    },
+                    "core": {"user_results": {"result": {
+                        "legacy": {"screen_name": "TestUser"}}}},
+                }}}}
+            }]
+        }]}}}}
+
+        class MockResponse:
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def read(self):
+                return json.dumps(payload).encode()
+
+        with patch.dict(
+            __import__("os").environ,
+            {"TWITTER_AUTH_TOKEN": "t", "TWITTER_CT0": "c"},
+        ):
+            original = sources_module.urllib.request.urlopen
+            sources_module.urllib.request.urlopen = lambda request, timeout: MockResponse()
+            try:
+                items = sources_module._fetch_x_timeline("home", "", 5)
+            finally:
+                sources_module.urllib.request.urlopen = original
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source"], "x-home")
+        self.assertEqual(items[0]["score"], 100)
+        self.assertEqual(items[0]["comment_count"], 11)
+        self.assertTrue(items[0]["url"].startswith("https://x.com/"))
         
     def test_reddit_fetcher_returns_items_with_correct_structure(self):
         # Mock the reddit response to test structure

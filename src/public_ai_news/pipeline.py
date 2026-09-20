@@ -515,6 +515,8 @@ def _rank_score(item: Mapping[str, Any]) -> int:
     source_bonus = _SOURCE_BONUS.get(source_name, 0)
     if source_name.startswith("bluesky-"):
         source_bonus = max(source_bonus, 12)
+    if source_name.startswith("x-"):
+        source_bonus = max(source_bonus, 12)
     base = (
         int(item["relevance"])
         + source_bonus

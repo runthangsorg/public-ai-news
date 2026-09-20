@@ -417,6 +417,26 @@ def _validated_sources(config_json: str) -> list[dict[str, Any]]:
             validated.append(
                 {"type": stype, "limit": _bounded_limit(source.get("limit", 15)), "query": query}
             )
+        elif stype == "x_timeline":
+            if set(source) - {"type", "mode", "screen_name", "limit"}:
+                raise SourceConfigError("X timeline source contains unknown fields")
+            mode = str(source.get("mode") or "home").strip().lower()
+            if mode not in {"home", "profile"}:
+                raise SourceConfigError("X timeline mode must be home or profile")
+            screen_name = " ".join(str(source.get("screen_name") or "").split())
+            if mode == "profile":
+                import re as _re2
+
+                if not _re2.fullmatch(r"[A-Za-z0-9_]{1,15}", screen_name):
+                    raise SourceConfigError("X profile screen_name is invalid")
+            validated.append(
+                {
+                    "type": stype,
+                    "mode": mode,
+                    "screen_name": screen_name,
+                    "limit": _bounded_limit(source.get("limit", 15)),
+                }
+            )
         elif stype == "reddit":
             if set(source) - {"type", "query", "limit"}:
                 raise SourceConfigError("Reddit source contains unknown fields")
@@ -486,6 +506,14 @@ def fetch_from_config(config_json: Optional[str] = None) -> list[Mapping[str, An
             all_items.extend(fetch_rss(source["url"], limit=limit, source_name=source.get("source", "rss")))
         elif stype == "x_search":
             all_items.extend(_fetch_x_search(source["query"], limit=limit))
+        elif stype == "x_timeline":
+            all_items.extend(
+                _fetch_x_timeline(
+                    mode=source.get("mode", "home"),
+                    screen_name=source.get("screen_name", ""),
+                    limit=limit,
+                )
+            )
         elif stype == "reddit":
             all_items.extend(_fetch_reddit(source["query"], limit=limit))
         elif stype == "github_trending":
@@ -658,6 +686,182 @@ def _fetch_x_search(query: str, limit: int = 15) -> list[Mapping[str, Any]]:
     """
     # Return empty list to maintain privacy boundary - no social tokens/cookies
     return []
+
+
+# Public x.com web-client bearer (ships in the web app; not a secret).
+_X_Bearer = (
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs="
+    "1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
+)
+_X_QUERIES = {
+    "home": "-X_hcgQzmHGl29-UXxz4sw/HomeTimeline",
+    "profile": "QWF3SzpHmykQHsQMixG0cg/UserTweets",
+}
+
+
+def _x_session_cookies() -> tuple[str, str]:
+    return (
+        (os.environ.get("TWITTER_AUTH_TOKEN") or "").strip(),
+        (os.environ.get("TWITTER_CT0") or "").strip(),
+    )
+
+
+def _x_graphql(path: str, variables: Mapping[str, Any], auth: str, ct0: str) -> Mapping[str, Any]:
+    import urllib.parse
+
+    url = (
+        f"https://x.com/i/api/graphql/{path}?"
+        + urllib.parse.urlencode(
+            {
+                "variables": json.dumps(dict(variables)),
+                "features": json.dumps(
+                    {"responsive_web_graphql_exclude_directive_enabled": True}
+                ),
+            }
+        )
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            "authorization": f"Bearer {_X_Bearer}",
+            "x-csrf-token": ct0,
+            "x-twitter-auth-type": "OAuth2Session",
+            "origin": "https://x.com",
+            "referer": "https://x.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+            ),
+            "Cookie": f"auth_token={auth}; ct0={ct0}",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _x_parse_tweet_entries(data: Mapping[str, Any], source: str) -> list[Mapping[str, Any]]:
+    instructions: list[Mapping[str, Any]] = []
+    try:
+        home = data.get("data", {}).get("home", {})
+        user = data.get("data", {}).get("user", {}).get("result", {})
+        if home and home.get("home_timeline_urt"):
+            instructions = home["home_timeline_urt"].get("instructions", [])
+        else:
+            instructions = (
+                user.get("timeline_v2", {}).get("timeline", {}).get("instructions", [])
+            )
+    except (AttributeError, TypeError):
+        return []
+    items = []
+    for instruction in instructions:
+        for entry in instruction.get("entries", []) or []:
+            content = (entry.get("content", {}) or {}).get("itemContent", {})
+            result = ((content.get("tweet_results", {}) or {}).get("result", {})) or {}
+            legacy = result.get("legacy", {}) or {}
+            text = _TEXT_SANITIZER(legacy.get("full_text", "")).strip()
+            if not text or "legacy" not in result:
+                continue
+            user_legacy = (
+                ((result.get("core", {}) or {}).get("user_results", {}) or {})
+                .get("result", {})
+                .get("legacy", {})
+            ) or {}
+            screen_name = str(user_legacy.get("screen_name") or "").strip()
+            rest_id = str(result.get("rest_id") or legacy.get("id_str") or "")
+            if not screen_name or not rest_id.isdigit():
+                continue
+            link = f"https://x.com/{screen_name}/status/{rest_id}"
+            if not _safe_public_url(link):
+                continue
+            try:
+                likes = int(legacy.get("favorite_count") or 0)
+            except (TypeError, ValueError):
+                likes = 0
+            try:
+                replies = int(legacy.get("reply_count") or 0)
+            except (TypeError, ValueError):
+                replies = 0
+            try:
+                reposts = int(legacy.get("retweet_count") or 0)
+            except (TypeError, ValueError):
+                reposts = 0
+            first_line = text.split("\n", 1)[0].strip() or text[:140]
+            items.append(
+                {
+                    "title": first_line[:240],
+                    "url": link,
+                    "score": likes,
+                    "source": source,
+                    "summary": _clean_markup(text, limit=800),
+                    "published_at": _published_at(legacy.get("created_at")),
+                    "comment_count": replies + reposts,
+                    "comments_url": link,
+                }
+            )
+    return items
+
+
+def _x_resolve_user_id(screen_name: str, auth: str, ct0: str) -> str:
+    try:
+        req = urllib.request.Request(
+            f"https://api.fxtwitter.com/{screen_name}",
+            headers={"User-Agent": DEFAULT_USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            uid = str(
+                json.loads(response.read().decode("utf-8")).get("user", {}).get("id")
+                or ""
+            )
+        return uid if uid.isdigit() else ""
+    except Exception:
+        return ""
+
+
+def _fetch_x_timeline(mode: str = "home", screen_name: str = "", limit: int = 15) -> list[Mapping[str, Any]]:
+    """
+    Read the user's X home timeline (followed accounts) or a public profile
+    timeline via x.com web GraphQL using session cookies from the environment.
+    Returns [] when cookies are absent or rejected — never raises.
+    """
+    auth, ct0 = _x_session_cookies()
+    if not auth or not ct0:
+        return []
+    try:
+        if mode == "profile":
+            uid = _x_resolve_user_id(screen_name, auth, ct0)
+            if not uid:
+                return []
+            data = _x_graphql(
+                _X_QUERIES["profile"],
+                {
+                    "userId": uid,
+                    "count": min(max(limit, 5), 40),
+                    "includePromotedContent": False,
+                    "withQuickPromoteEligibilityTweetFields": False,
+                    "withVoice": False,
+                    "withV2Timeline": True,
+                },
+                auth,
+                ct0,
+            )
+            source = f"x-{screen_name.lower()}"
+        else:
+            data = _x_graphql(
+                _X_QUERIES["home"],
+                {"count": min(max(limit * 2, 20), 60), "includePromotedContent": False,
+                 "latestControlAvailable": True},
+                auth,
+                ct0,
+            )
+            source = "x-home"
+        items = _x_parse_tweet_entries(data, source)
+    except Exception:
+        return []
+    items.sort(
+        key=lambda item: (int(item.get("score", 0)), int(item.get("comment_count", 0))),
+        reverse=True,
+    )
+    return items[:limit]
 
 
 def _fetch_reddit(query: str, limit: int = 15) -> list[Mapping[str, Any]]:
