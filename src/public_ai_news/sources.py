@@ -545,11 +545,15 @@ def _fetch_reddit(query: str, limit: int = 15) -> list[Mapping[str, Any]]:
                 continue
         except Exception:
             pass
-        # 2) Arctic Shift archive fallback (public, no auth).
+        # 2) Arctic Shift archive fallback (public, no auth; single-token
+        # query — multi-term queries 422 on some subreddits).
         try:
+            fallback_query = urllib.parse.quote_plus(
+                (str(query or "AI").split() or ["AI"])[0][:40]
+            )
             url = (
                 "https://arctic-shift.photon-reddit.com/api/posts/search"
-                f"?query={search_query}&subreddit={subreddit}&limit={per_sub}&sort=desc"
+                f"?query={fallback_query}&subreddit={subreddit}&limit={per_sub}&sort=desc"
             )
             req = urllib.request.Request(
                 url,

@@ -23,79 +23,142 @@ def _display_date(value: Any) -> str:
         return "Date unavailable"
 
 
-def _compact_extract(value: Any, *, limit: int = 220) -> str:
+def _compact_extract(value: Any, *, limit: int = 170) -> str:
     """Bound the email extract so rows stay short."""
+    import re
+
     clean = " ".join(str(value or "").split()).strip()
+    if not clean:
+        return "No source extract was available; open the article for details."
+    cjk = len(
+        re.findall(
+            "[\u2e80-\u2eff\u3000-\u303f\u3040-\u30ff\u3100-\u312f\u3200-\u32ff"
+            "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]",
+            clean,
+        )
+    )
+    if len(clean) > 20 and cjk / len(clean) > 0.3:
+        return "No English extract available — open the source for details."
     if len(clean) <= limit:
-        return clean or "No source extract was available; open the article for details."
+        return clean
     cut = clean[: limit - 1].rsplit(" ", 1)[0] or clean[: limit - 1]
     return cut.rstrip(" ,;:") + "…"
 
 
-def _link(url: str, label: str) -> str:
-    if not url:
-        return ""
+def _meta(item: Mapping[str, Any]) -> dict:
+    # NOTE: categories are uppercased via CSS (text-transform), never by
+    # upper()-ing escaped HTML (which corrupts entities like &amp;).
+    return {
+        "title": html.escape(str(item.get("title") or "Untitled story")),
+        "url": str(item.get("url") or ""),
+        "comments_url": str(item.get("comments_url") or ""),
+        "source": html.escape(str(item.get("source") or "public-feed")),
+        "category": html.escape(str(item.get("category") or "AI Engineering")),
+        "summary": html.escape(_compact_extract(item.get("summary"))),
+        "date": html.escape(_display_date(item.get("published_at"))),
+        "score": html.escape(str(item.get("score") or 0)),
+        "comments": html.escape(str(item.get("comment_count") or 0)),
+    }
+
+
+def _title_link(meta: dict) -> str:
+    if not meta["url"]:
+        return meta["title"]
     return (
-        f'<a href="{html.escape(url, quote=True)}" '
-        f'style="color:#58a6ff;text-decoration:none;font-size:10px;">{html.escape(label)}</a>'
+        f'<a href="{html.escape(meta["url"], quote=True)}" '
+        f'style="color:#0b57d0;text-decoration:none;">{meta["title"]}</a>'
+    )
+
+
+def _action_links(meta: dict) -> str:
+    parts = []
+    if meta["url"]:
+        parts.append(
+            f'<a href="{html.escape(meta["url"], quote=True)}" '
+            f'style="color:#0b57d0;text-decoration:none;">Read →</a>'
+        )
+    if meta["comments_url"]:
+        parts.append(
+            f'<a href="{html.escape(meta["comments_url"], quote=True)}" '
+            f'style="color:#0b57d0;text-decoration:none;">Discuss</a>'
+        )
+    return " · ".join(parts)
+
+
+def _row(index: int, meta: dict) -> str:
+    links = _action_links(meta)
+    links_html = f" · {links}" if links else ""
+    return (
+        f'<tr><td style="padding:9px 14px;border-bottom:1px solid #e5e9f0;">'
+        f'<div style="font-size:10px;color:#5f6368;margin:0 0 2px 0;">'
+        f"#{index} · "
+        f'<span style="text-transform:uppercase;letter-spacing:.3px;">{meta["category"]}</span>'
+        f" · {meta['source']} · {meta['date']}</div>"
+        f'<div style="font-size:14.5px;line-height:1.35;font-weight:700;color:#111111;margin:0 0 2px 0;">'
+        f"{_title_link(meta)}</div>"
+        f'<div style="font-size:12.5px;line-height:1.45;color:#333333;margin:0 0 4px 0;">'
+        f"{meta['summary']}</div>"
+        f'<div style="font-size:10.5px;color:#5f6368;">'
+        f"★ {meta['score']} · 💬 {meta['comments']}{links_html}</div>"
+        f"</td></tr>"
     )
 
 
 def _build_html(items: List[Mapping[str, Any]]) -> str:
-    """Build a compact, email-safe AI engineering briefing."""
-    cards = []
-    for index, item in enumerate(items, 1):
-        title = html.escape(str(item.get("title") or "Untitled story"))
-        url = str(item.get("url") or "")
-        comments_url = str(item.get("comments_url") or "")
-        source = html.escape(str(item.get("source") or "public-feed"))
-        category = html.escape(str(item.get("category") or "AI Engineering"))
-        summary = html.escape(_compact_extract(item.get("summary")))
-        date = html.escape(_display_date(item.get("published_at")))
-        score = html.escape(str(item.get("score") or 0))
-        comments = html.escape(str(item.get("comment_count") or 0))
-        links = _link(url, "Read")
-        discuss = _link(comments_url, "Discuss")
-        if links and discuss:
-            links = f"{links} · {discuss}"
-        elif discuss:
-            links = discuss
-        cards.append(
-            f"""
-            <article style="background:#0d1117;border:1px solid #30363d;border-radius:5px;margin:0 0 6px 0;">
-              <div style="padding:6px 8px 7px;">
-                <div style="color:#8b949e;font-size:9px;margin:0 0 2px 0;">#{index} · {category} · {source} · {date}</div>
-                <div style="font-size:12.5px;line-height:1.3;color:#f0f6fc;margin:0 0 2px 0;">{title}</div>
-                <div style="color:#c9d1d9;font-size:11px;line-height:1.35;margin:0 0 3px 0;">{summary}</div>
-                <div style="color:#8b949e;font-size:9.5px;">★ {score} · 💬 {comments}{' · ' + links if links else ''}</div>
-              </div>
-            </article>
-            """
-        )
-
-    body = "".join(cards)
-    if not body:
+    """Build a light, scannable, email-safe AI engineering briefing."""
+    today = datetime.now().strftime("%d %b %Y")
+    if not items:
         body = (
-            '<div style="background:#0d1117;border:1px solid #30363d;'
-            'border-radius:5px;padding:10px;color:#8b949e;font-size:11px;">'
+            '<div style="background:#ffffff;border:1px solid #e5e9f0;border-radius:8px;'
+            'padding:14px;color:#5f6368;font-size:13px;">'
             "No story passed the engineering relevance and evidence gates today."
             "</div>"
         )
+        table = body
+    else:
+        top = list(items[:5])
+        top_rows = []
+        for rank, raw in enumerate(top, 1):
+            meta = _meta(raw)
+            top_rows.append(
+                f'<div style="padding:5px 0;border-bottom:1px solid #d7e3fb;">'
+                f'<span style="color:#0b57d0;font-weight:700;">{rank}.</span> '
+                f'<span style="font-size:13.5px;font-weight:600;">{_title_link(meta)}</span><br>'
+                f'<span style="font-size:10.5px;color:#5f6368;">{meta["source"]} · '
+                f"★ {meta['score']} · 💬 {meta['comments']}</span>"
+                f"</div>"
+            )
+        top_box = (
+            '<div style="background:#eef4ff;border:1px solid #c9defc;border-radius:8px;'
+            'padding:10px 14px;margin:0 0 12px 0;">'
+            '<div style="font-size:11px;font-weight:700;letter-spacing:.4px;color:#0b57d0;'
+            'margin-bottom:4px;">🔥 TOP 5 TODAY</div>' + "".join(top_rows) + "</div>"
+        )
+        rows = "".join(_row(index, _meta(raw)) for index, raw in enumerate(items, 1))
+        table = (
+            top_box
+            + '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
+            'width="100%" style="background:#ffffff;border:1px solid #e5e9f0;'
+            'border-radius:8px;border-collapse:collapse;">'
+            + rows
+            + "</table>"
+        )
     return f"""<!doctype html>
- <html>
- <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
- <body style="background:#010409;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:8px 6px;">
-   <main style="max-width:680px;margin:0 auto;">
-     <header style="border-bottom:1px solid #2f81f7;padding:2px 2px 6px;margin-bottom:8px;">
-       <h1 style="color:#f0f6fc;font-size:16px;line-height:1.1;margin:0;">⚡ AI Engineering Brief ({len(items)})</h1>
-     </header>
-     {body}
-     <footer style="border-top:1px solid #30363d;color:#8b949e;font-size:9px;line-height:1.3;margin-top:8px;padding:5px 2px 0;">
-       Source extracts only · open the source before relying on details.
-     </footer>
-   </main>
- </body>
- </html>"""
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="background:#f6f8fa;color:#333333;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:12px 8px;">
+  <main style="max-width:640px;margin:0 auto;">
+    <header style="padding:2px 2px 8px;margin-bottom:10px;">
+      <h1 style="color:#111111;font-size:19px;line-height:1.2;margin:0;">⚡ AI Engineering Brief ({len(items)})</h1>
+      <div style="color:#5f6368;font-size:11px;margin-top:3px;">{today} · ranked by usefulness (relevance × social) — open the source before relying on details.</div>
+    </header>
+    {table}
+    <footer style="color:#80868b;font-size:9.5px;line-height:1.4;margin-top:10px;padding:4px 2px 0;">
+      Source extracts only, not model-written claims. Scores are directional.
+    </footer>
+  </main>
+</body>
+</html>"""
 
 
 def send_digest(items: List[Mapping[str, Any]], dry_run: bool = False) -> bool:
@@ -113,12 +176,21 @@ def send_digest(items: List[Mapping[str, Any]], dry_run: bool = False) -> bool:
 
     html_content = _build_html(items)
     text_lines = ["AI Engineering Brief", ""]
+    top = list(items[:5])
+    if top:
+        text_lines.append("TOP 5 TODAY:")
+        for rank, pick in enumerate(top, 1):
+            text_lines.append(f"  {rank}. {pick.get('title', 'Untitled story')}")
+            text_lines.append(f"     Read: {pick.get('url', '')}")
+        text_lines.append("")
     for index, item in enumerate(items, 1):
         text_lines.extend(
             [
                 f"{index}. {item.get('title', 'Untitled story')}",
-                f"   {item.get('source', 'public-feed')} · {_display_date(item.get('published_at'))}",
-                f"   Source extract: {item.get('summary') or 'No source extract available.'}",
+                f"   [{item.get('category', 'AI Engineering')}] "
+                f"{item.get('source', 'public-feed')} · {_display_date(item.get('published_at'))} "
+                f"· score {item.get('score', 0)} · comments {item.get('comment_count', 0)}",
+                f"   {_compact_extract(item.get('summary'))}",
                 f"   Read: {item.get('url', '')}",
             ]
         )

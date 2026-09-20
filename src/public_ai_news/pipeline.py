@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import ipaddress
+import math
 import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -92,6 +93,16 @@ SIGNALS = {
     "aider": 5,
 }
 _VERSION_BUMP = re.compile(r"\b\d+\.\d+(?:\.\d+|[a-z]+\d*)\b")
+_FLUFF_RE = re.compile(
+    r"my prediction|next decade|jobs automated|career advice|for teachers|"
+    r"school districts|what students gain|talk like claude|claude code addiction|"
+    r"\bforecast\b.*\b2030\b",
+    re.IGNORECASE,
+)
+_CJK_RE = re.compile(
+    "[\u2e80-\u2eff\u3000-\u303f\u3040-\u30ff\u3100-\u312f\u3200-\u32ff"
+    "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]"
+)
 _HANDLE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,30}")
 _SPACE = re.compile(r"\s+")
 _SECRET_ASSIGNMENT = re.compile(
@@ -141,6 +152,9 @@ _NOISE_PHRASES = (
     "subscribe to",
     "drop a like",
     "leave a comment",
+    "my prediction",
+    "next decade",
+    "jobs automated",
 )
 _TECHNICAL_TERMS = {
     "language model": 7,
@@ -272,6 +286,64 @@ def _source_extract(value: Any) -> str:
     return (bounded or extract[:597]).rstrip() + "..."
 
 
+def _best_extract(title: str, summary: Any, *, limit: int = 170) -> str:
+    """Select the most technical, non-redundant sentence(s) for the digest row."""
+    clean = _text(summary, limit=1200)
+    if not clean:
+        return ""
+    # Strip a leading title repeat ("Title Title rest...") common in feed metadata.
+    folded_title = " ".join(str(title or "").split()).casefold()
+    folded_clean = clean.casefold()
+    if folded_title and len(folded_title) >= 12 and folded_clean.startswith(folded_title):
+        clean = clean[len(folded_title):].lstrip(" :;,.–—-").strip()
+        if not clean:
+            return ""
+    # Non-English gate: don't ship unreadable extracts.
+    if len(clean) > 20 and len(_CJK_RE.findall(clean)) / len(clean) > 0.3:
+        return ""
+    title_tokens = {
+        token
+        for token in _TITLE_TOKEN.findall(title.casefold())
+        if token not in _STOPWORDS and len(token) > 3
+    }
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", clean)
+        if sentence.strip() and len(sentence.strip()) >= 25
+    ]
+    if not sentences:
+        return clean[:limit].strip()
+    scored = []
+    for sentence in sentences:
+        tokens = set(_TITLE_TOKEN.findall(sentence.casefold()))
+        long_tokens = {token for token in tokens if len(token) > 3}
+        overlap = (
+            len(long_tokens & title_tokens) / max(1, len(long_tokens))
+            if long_tokens
+            else 0.0
+        )
+        if overlap > 0.6 and len(long_tokens) >= 4:
+            continue  # restates the title; adds no information
+        tech = _technical_relevance(sentence)
+        scored.append((tech, len(sentence), sentence))
+    if not scored:
+        scored = [(0, len(sentence), sentence) for sentence in sentences]
+    scored.sort(key=lambda entry: (-entry[0], -min(entry[1], 170)))
+    picked = [scored[0][2]]
+    total = len(scored[0][2])
+    for _, _, sentence in scored[1:]:
+        if total + 1 + len(sentence) <= limit + 40:
+            picked.append(sentence)
+            total += 1 + len(sentence)
+        if total >= limit:
+            break
+    extract = " ".join(picked)
+    if len(extract) <= limit:
+        return extract
+    bounded = extract[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:")
+    return (bounded or extract[: limit - 1]).rstrip() + "…"
+
+
 def _published_at(value: Any) -> str:
     raw = str(value or "").strip()[:80]
     if not raw:
@@ -294,12 +366,13 @@ def _bounded_integer(value: Any, maximum: int = 1_000_000) -> int:
 
 def sanitize_item(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Return the narrow schema allowed across the private/public boundary."""
+    title = _text(raw.get("title"), limit=240)
     return {
-        "title": _text(raw.get("title"), limit=240),
+        "title": title,
         "url": _public_url(raw.get("url")),
         "comments_url": _public_url(raw.get("comments_url")),
         "source": _source(raw.get("source")),
-        "summary": _source_extract(raw.get("summary")),
+        "summary": _best_extract(title, raw.get("summary")),
         "published_at": _published_at(raw.get("published_at")),
         "score": _bounded_integer(raw.get("score")),
         "comment_count": _bounded_integer(raw.get("comment_count")),
@@ -411,25 +484,51 @@ def _is_stale(value: str, *, max_age_days: int = 45) -> bool:
     return published < now - timedelta(days=max_age_days)
 
 
+def _fresh_bonus(value: Any) -> int:
+    """Reward recency so evergreen giants can't top the digest every day."""
+    try:
+        published = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return 0
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - published
+    if age <= timedelta(days=3):
+        return 8
+    if age <= timedelta(days=7):
+        return 4
+    return 0
+
+
 def _rank_score(item: Mapping[str, Any]) -> int:
     title = str(item.get("title") or "").casefold()
+    combined = f"{item.get('title', '')} {item.get('summary', '')}".casefold()
     prefix_penalty = 12 if title.startswith(("show hn:", "ask hn:")) else 0
     # Demote micro version bumps (e.g. "datasette 1.0a40") unless strongly relevant.
     version_penalty = (
-        12
+        14
         if _VERSION_BUMP.search(title) and int(item.get("relevance", 0)) < 30
         else 0
     )
+    fluff_penalty = 18 if _FLUFF_RE.search(combined) else 0
     base = (
         int(item["relevance"])
         + _SOURCE_BONUS.get(str(item["source"]), 0)
         - prefix_penalty
         - version_penalty
+        - fluff_penalty
     )
-    social = min(int(item.get("score", 0)) // 12, 40) + min(
-        int(item.get("comment_count", 0)) // 3, 25
-    )
-    return base + social
+    # Log-scaled social: 200k-star evergreens must not dwarf a 500-pt HN thread.
+    try:
+        likes = int(math.log10(int(item.get("score", 0)) + 1) * 12)
+    except (TypeError, ValueError):
+        likes = 0
+    try:
+        discussion = int(math.log10(int(item.get("comment_count", 0)) + 1) * 8)
+    except (TypeError, ValueError):
+        discussion = 0
+    social = min(likes, 30) + min(discussion, 15)
+    return base + social + _fresh_bonus(item.get("published_at"))
 
 
 def rank_items(
@@ -475,12 +574,13 @@ def rank_items(
     accepted_tokens: list[set[str]] = []
     per_source: dict[str, int] = {}
     deferred: list[dict[str, Any]] = []
-    source_cap = 3
     for item in candidates:
         tokens = _title_tokens(item["title"])
         if _near_duplicate(tokens, accepted_tokens):
             continue
-        if per_source.get(item["source"], 0) >= source_cap:
+        # Top-5 stays diverse (max 2/source); the rest allows up to 3/source.
+        cap = 2 if len(ranked) < 5 else 3
+        if per_source.get(item["source"], 0) >= cap:
             deferred.append(item)
             continue
         accepted_tokens.append(tokens)
@@ -493,8 +593,11 @@ def rank_items(
             tokens = _title_tokens(item["title"])
             if _near_duplicate(tokens, accepted_tokens):
                 continue
+            if per_source.get(item["source"], 0) >= 3:
+                continue
             accepted_tokens.append(tokens)
             ranked.append(item)
+            per_source[item["source"]] = per_source.get(item["source"], 0) + 1
             if len(ranked) >= limit:
                 break
     return ranked
