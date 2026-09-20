@@ -433,11 +433,11 @@ def _validated_sources(config_json: str) -> list[dict[str, Any]]:
                 {"type": stype, "limit": _bounded_limit(source.get("limit", 15))}
             )
         elif stype == "bluesky":
-            if set(source) - {"type", "handles", "limit"}:
+            if set(source) - {"type", "handles", "limit", "query", "search_limit"}:
                 raise SourceConfigError("Bluesky source contains unknown fields")
             raw_handles = source.get("handles") or ["karpathy.bsky.social"]
-            if not isinstance(raw_handles, list) or not 1 <= len(raw_handles) <= 10:
-                raise SourceConfigError("Bluesky handles must be a list of 1-10 items")
+            if not isinstance(raw_handles, list) or not 1 <= len(raw_handles) <= 20:
+                raise SourceConfigError("Bluesky handles must be a list of 1-20 items")
             import re as _re
 
             handles = []
@@ -446,8 +446,23 @@ def _validated_sources(config_json: str) -> list[dict[str, Any]]:
                 if not _re.fullmatch(r"[a-z0-9][a-z0-9.\-]{1,60}", cleaned):
                     raise SourceConfigError(f"invalid Bluesky handle: {handle!r}")
                 handles.append(cleaned)
+            query = " ".join(str(source.get("query") or "AI agents LLM").split())
+            if not 1 <= len(query) <= 200:
+                raise SourceConfigError("Bluesky query is out of bounds")
+            try:
+                search_limit = int(source.get("search_limit", 8))
+            except (TypeError, ValueError) as exc:
+                raise SourceConfigError("Bluesky search_limit must be an integer") from exc
+            if not 0 <= search_limit <= 30:
+                raise SourceConfigError("Bluesky search_limit must be between 0 and 30")
             validated.append(
-                {"type": stype, "limit": _bounded_limit(source.get("limit", 10)), "handles": handles}
+                {
+                    "type": stype,
+                    "limit": _bounded_limit(source.get("limit", 15)),
+                    "handles": handles,
+                    "query": query,
+                    "search_limit": search_limit,
+                }
             )
         else:
             raise SourceConfigError("unsupported news source type")
@@ -476,7 +491,14 @@ def fetch_from_config(config_json: Optional[str] = None) -> list[Mapping[str, An
         elif stype == "github_trending":
             all_items.extend(_fetch_github_trending(limit=limit))
         elif stype == "bluesky":
-            all_items.extend(_fetch_bluesky(source["handles"], limit=limit))
+            all_items.extend(
+                _fetch_bluesky(
+                    source["handles"],
+                    limit=limit,
+                    query=source.get("query", "AI agents LLM"),
+                    search_limit=source.get("search_limit", 8),
+                )
+            )
 
     return all_items
 
@@ -488,66 +510,137 @@ def _TEXT_SANITIZER(value: Any) -> str:
     return handle_pattern.sub("[account]", str(value or ""))
 
 
-def _fetch_bluesky(handles: list[str], limit: int = 10) -> list[Mapping[str, Any]]:
-    """
-    Fetch recent posts from curated Bluesky AI accounts via the public
-    getAuthorFeed endpoint (no auth). Likes map to score and replies to
-    comment_count so community-validated posts rank.
-    """
+def _bluesky_session_token() -> str:
+    """Create an in-memory Bluesky session; empty string when creds are absent."""
+    handle = (os.environ.get("BLUESKY_HANDLE") or "").strip()
+    password = (os.environ.get("BLUESKY_APP_PASSWORD") or "").strip()
+    if not handle or not password:
+        return ""
+    try:
+        payload = json.dumps({"identifier": handle, "password": password}).encode()
+        req = urllib.request.Request(
+            "https://bsky.social/xrpc/com.atproto.server.createSession",
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": DEFAULT_USER_AGENT},
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            return str(json.loads(response.read().decode("utf-8")).get("accessJwt") or "")
+    except Exception:
+        return ""
+
+
+def _bluesky_post_to_item(post: Mapping[str, Any], handle: str, source: str) -> Optional[Mapping[str, Any]]:
+    record = post.get("record", {}) or {}
+    text = _TEXT_SANITIZER(record.get("text", "")).strip()
+    if not text:
+        return None
+    rkey = str(post.get("uri") or "").rsplit("/", 1)[-1]
+    if not rkey:
+        return None
+    author_handle = str((post.get("author", {}) or {}).get("handle") or handle)
+    link = f"https://bsky.app/profile/{author_handle}/post/{rkey}"
+    if not _safe_public_url(link):
+        return None
+    try:
+        likes = int(post.get("likeCount") or 0)
+    except (TypeError, ValueError):
+        likes = 0
+    try:
+        replies = int(post.get("replyCount") or 0)
+    except (TypeError, ValueError):
+        replies = 0
+    first_line = text.split("\n", 1)[0].strip() or text[:140]
+    return {
+        "title": first_line[:240],
+        "url": link,
+        "score": likes,
+        "source": source,
+        "summary": _clean_markup(text, limit=800),
+        "published_at": _published_at(post.get("indexedAt") or record.get("createdAt")),
+        "comment_count": replies,
+        "comments_url": link,
+    }
+
+
+def _fetch_bluesky_handle(handle: str, per_handle: int) -> list[Mapping[str, Any]]:
+    """Recent posts from one followed account (public endpoint, no auth)."""
     import urllib.parse
 
-    items: list[Mapping[str, Any]] = []
-    per_handle = max(2, min(6, limit // max(1, len(handles)) + 1))
+    try:
+        url = (
+            "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+            f"?actor={urllib.parse.quote_plus(handle)}&limit={per_handle}"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+    source = f"bluesky-{handle.split('.')[0].lower()}"
+    items = []
+    for entry in data.get("feed", []):
+        item = _bluesky_post_to_item(entry.get("post", {}), handle, source)
+        if item:
+            items.append(item)
+    return items
 
-    for handle in handles:
-        try:
-            url = (
-                "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
-                f"?actor={urllib.parse.quote_plus(handle)}&limit={per_handle}"
-            )
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=12) as response:
-                data = json.loads(response.read().decode("utf-8"))
-            for entry in data.get("feed", []):
-                post = entry.get("post", {})
-                record = post.get("record", {}) or {}
-                text = _TEXT_SANITIZER(record.get("text", "")).strip()
-                if not text:
-                    continue
-                rkey = str(post.get("uri") or "").rsplit("/", 1)[-1]
-                if not rkey:
-                    continue
-                link = f"https://bsky.app/profile/{handle}/post/{rkey}"
-                if not _safe_public_url(link):
-                    continue
-                try:
-                    likes = int(post.get("likeCount") or 0)
-                except (TypeError, ValueError):
-                    likes = 0
-                try:
-                    replies = int(post.get("replyCount") or 0)
-                except (TypeError, ValueError):
-                    replies = 0
-                first_line = text.split("\n", 1)[0].strip() or text[:140]
-                items.append(
-                    {
-                        "title": first_line[:240],
-                        "url": link,
-                        "score": likes,
-                        "source": f"bluesky-{handle.split('.')[0].lower()}",
-                        "summary": _clean_markup(text, limit=800),
-                        "published_at": _published_at(
-                            post.get("indexedAt") or record.get("createdAt")
-                        ),
-                        "comment_count": replies,
-                        "comments_url": link,
-                    }
-                )
-        except Exception:
-            continue
+
+def _fetch_bluesky_search(query: str, search_limit: int, token: str) -> list[Mapping[str, Any]]:
+    """Global like-sorted Bluesky search (needs app-password session)."""
+    import urllib.parse
+
+    if not token or search_limit <= 0:
+        return []
+    try:
+        url = (
+            "https://bsky.social/xrpc/app.bsky.feed.searchPosts"
+            f"?q={urllib.parse.quote_plus(query)}&limit={min(search_limit, 25)}&sort=top"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": DEFAULT_USER_AGENT,
+                "Accept": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=12) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return []
+    items = []
+    for post in data.get("posts", []):
+        author_handle = str((post.get("author", {}) or {}).get("handle") or "bluesky")
+        item = _bluesky_post_to_item(post, author_handle, "bluesky-search")
+        if item:
+            items.append(item)
+    return items
+
+
+def _fetch_bluesky(
+    handles: list[str], limit: int = 15, query: str = "AI agents LLM", search_limit: int = 8
+) -> list[Mapping[str, Any]]:
+    """
+    Followed Bluesky AI accounts (parallel, public) plus like-sorted global
+    search when BLUESKY_HANDLE/BLUESKY_APP_PASSWORD are configured.
+    Likes map to score and replies to comment_count so community-validated
+    posts rank.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    items: list[Mapping[str, Any]] = []
+    per_handle = max(2, min(4, limit // max(1, len(handles)) + 1))
+    workers = min(6, max(1, len(handles)))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for handle_items in executor.map(
+            lambda handle: _fetch_bluesky_handle(handle, per_handle), handles
+        ):
+            items.extend(handle_items)
+    token = _bluesky_session_token()
+    items.extend(_fetch_bluesky_search(query, search_limit, token))
 
     items.sort(
         key=lambda item: (int(item.get("score", 0)), int(item.get("comment_count", 0))),

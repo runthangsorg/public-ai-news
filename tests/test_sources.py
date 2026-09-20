@@ -339,11 +339,14 @@ class SourceConfigTests(unittest.TestCase):
     def test_config_accepts_bluesky_source(self):
         sources = _validated_sources(
             '{"sources": [{"type": "bluesky", '
-            '"handles": ["karpathy.bsky.social"], "limit": 8}]}'
+            '"handles": ["karpathy.bsky.social"], "limit": 8, '
+            '"query": "AI agents", "search_limit": 5}]}'
         )
         self.assertEqual(len(sources), 1)
         self.assertEqual(sources[0]["type"], "bluesky")
         self.assertEqual(sources[0]["handles"], ["karpathy.bsky.social"])
+        self.assertEqual(sources[0]["query"], "AI agents")
+        self.assertEqual(sources[0]["search_limit"], 5)
         with self.assertRaises(SourceConfigError):
             _validated_sources('{"sources": [{"type": "bluesky", "handles": ["not a handle!!"]}]}')
 
@@ -374,7 +377,9 @@ class SourceConfigTests(unittest.TestCase):
                     }]}).encode()
 
             sources_module.urllib.request.urlopen = lambda request, timeout: MockResponse()
-            items = sources_module._fetch_bluesky(["karpathy.bsky.social"], limit=5)
+            items = sources_module._fetch_bluesky(
+                ["karpathy.bsky.social"], limit=5, search_limit=0
+            )
             self.assertEqual(len(items), 1)
             item = items[0]
             self.assertEqual(item["source"], "bluesky-karpathy")
@@ -383,6 +388,51 @@ class SourceConfigTests(unittest.TestCase):
             self.assertTrue(item["url"].startswith("https://bsky.app/profile/"))
         finally:
             sources_module.urllib.request.urlopen = original_urlopen
+
+    def test_bluesky_search_uses_session_and_maps_top_posts(self):
+        import public_ai_news.sources as sources_module
+        from unittest.mock import patch
+
+        search_payload = {"posts": [{
+            "uri": "at://did:plc:test/app.bsky.feed.post/xyz789",
+            "author": {"handle": "emollick.bsky.social"},
+            "record": {"text": "Big paper on AI coding agents", "createdAt": "2026-09-19T10:00:00Z"},
+            "likeCount": 118,
+            "repostCount": 4,
+            "replyCount": 11,
+            "indexedAt": "2026-09-19T10:05:00Z",
+        }]}
+
+        class MockResponse:
+            def __init__(self, payload):
+                self.payload = payload
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def read(self):
+                return json.dumps(self.payload).encode()
+
+        def mock_opener(request, timeout):
+            url = request.full_url
+            if "createSession" in url:
+                return MockResponse({"accessJwt": "test-token"})
+            return MockResponse(search_payload)
+
+        with patch.dict(
+            __import__("os").environ,
+            {"BLUESKY_HANDLE": "test.bsky.social", "BLUESKY_APP_PASSWORD": "test-pass"},
+        ):
+            original = sources_module.urllib.request.urlopen
+            sources_module.urllib.request.urlopen = mock_opener
+            try:
+                items = sources_module._fetch_bluesky_search("AI agents", 5, "test-token")
+            finally:
+                sources_module.urllib.request.urlopen = original
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["source"], "bluesky-search")
+        self.assertEqual(items[0]["score"], 118)
+        self.assertEqual(items[0]["comment_count"], 11)
 
 
 if __name__ == "__main__":
