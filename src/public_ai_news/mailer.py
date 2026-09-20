@@ -66,7 +66,7 @@ def _title_link(meta: dict) -> str:
         return meta["title"]
     return (
         f'<a href="{html.escape(meta["url"], quote=True)}" '
-        f'style="color:#0b57d0;text-decoration:none;">{meta["title"]}</a>'
+        f'style="color:#58a6ff;text-decoration:none;">{meta["title"]}</a>'
     )
 
 
@@ -89,16 +89,16 @@ def _row(index: int, meta: dict) -> str:
     links = _action_links(meta)
     links_html = f" · {links}" if links else ""
     return (
-        f'<tr><td style="padding:9px 14px;border-bottom:1px solid #e5e9f0;">'
-        f'<div style="font-size:10px;color:#5f6368;margin:0 0 2px 0;">'
+        f'<tr><td style="padding:9px 14px;border-bottom:1px solid #21262d;">'
+        f'<div style="font-size:10px;color:#8b949e;margin:0 0 2px 0;">'
         f"#{index} · "
         f'<span style="text-transform:uppercase;letter-spacing:.3px;">{meta["category"]}</span>'
         f" · {meta['source']} · {meta['date']}</div>"
-        f'<div style="font-size:14.5px;line-height:1.35;font-weight:700;color:#111111;margin:0 0 2px 0;">'
+        f'<div style="font-size:14.5px;line-height:1.35;font-weight:700;color:#f0f6fc;margin:0 0 2px 0;">'
         f"{_title_link(meta)}</div>"
-        f'<div style="font-size:12.5px;line-height:1.45;color:#333333;margin:0 0 4px 0;">'
+        f'<div style="font-size:12.5px;line-height:1.45;color:#c9d1d9;margin:0 0 4px 0;">'
         f"{meta['summary']}</div>"
-        f'<div style="font-size:10.5px;color:#5f6368;">'
+        f'<div style="font-size:10.5px;color:#8b949e;">'
         f"★ {meta['score']} · 💬 {meta['comments']}{links_html}</div>"
         f"</td></tr>"
     )
@@ -109,8 +109,8 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
     today = datetime.now().strftime("%d %b %Y")
     if not items:
         body = (
-            '<div style="background:#ffffff;border:1px solid #e5e9f0;border-radius:8px;'
-            'padding:14px;color:#5f6368;font-size:13px;">'
+            '<div style="background:#0d1117;border:1px solid #30363d;border-radius:8px;'
+            'padding:14px;color:#8b949e;font-size:13px;">'
             "No story passed the engineering relevance and evidence gates today."
             "</div>"
         )
@@ -121,24 +121,24 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
         for rank, raw in enumerate(top, 1):
             meta = _meta(raw)
             top_rows.append(
-                f'<div style="padding:5px 0;border-bottom:1px solid #d7e3fb;">'
-                f'<span style="color:#0b57d0;font-weight:700;">{rank}.</span> '
-                f'<span style="font-size:13.5px;font-weight:600;">{_title_link(meta)}</span><br>'
-                f'<span style="font-size:10.5px;color:#5f6368;">{meta["source"]} · '
+                f'<div style="padding:5px 0;border-bottom:1px solid #21262d;">'
+                f'<span style="color:#f0883e;font-weight:700;">{rank}.</span> '
+                f'<span style="font-size:13.5px;font-weight:600;color:#f0f6fc;">{_title_link(meta)}</span><br>'
+                f'<span style="font-size:10.5px;color:#8b949e;">{meta["source"]} · '
                 f"★ {meta['score']} · 💬 {meta['comments']}</span>"
                 f"</div>"
             )
         top_box = (
-            '<div style="background:#eef4ff;border:1px solid #c9defc;border-radius:8px;'
+            '<div style="background:#161b22;border:1px solid #f0883e;border-radius:8px;'
             'padding:10px 14px;margin:0 0 12px 0;">'
-            '<div style="font-size:11px;font-weight:700;letter-spacing:.4px;color:#0b57d0;'
+            '<div style="font-size:11px;font-weight:700;letter-spacing:.4px;color:#f0883e;'
             'margin-bottom:4px;">🔥 TOP 5 TODAY</div>' + "".join(top_rows) + "</div>"
         )
         rows = "".join(_row(index, _meta(raw)) for index, raw in enumerate(items, 1))
         table = (
             top_box
             + '<table role="presentation" cellpadding="0" cellspacing="0" border="0" '
-            'width="100%" style="background:#ffffff;border:1px solid #e5e9f0;'
+            'width="100%" style="background:#0d1117;border:1px solid #30363d;'
             'border-radius:8px;border-collapse:collapse;">'
             + rows
             + "</table>"
@@ -146,14 +146,14 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
     return f"""<!doctype html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="background:#f6f8fa;color:#333333;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:12px 8px;">
+<body style="background:#010409;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:12px 8px;">
   <main style="max-width:640px;margin:0 auto;">
     <header style="padding:2px 2px 8px;margin-bottom:10px;">
-      <h1 style="color:#111111;font-size:19px;line-height:1.2;margin:0;">⚡ AI Engineering Brief ({len(items)})</h1>
-      <div style="color:#5f6368;font-size:11px;margin-top:3px;">{today} · ranked by usefulness (relevance × social) — open the source before relying on details.</div>
+      <h1 style="color:#f0f6fc;font-size:19px;line-height:1.2;margin:0;">⚡ AI Engineering Brief ({len(items)})</h1>
+      <div style="color:#8b949e;font-size:11px;margin-top:3px;">{today} · ranked by usefulness (relevance × social) — open the source before relying on details.</div>
     </header>
     {table}
-    <footer style="color:#80868b;font-size:9.5px;line-height:1.4;margin-top:10px;padding:4px 2px 0;">
+    <footer style="color:#8b949e;font-size:9.5px;line-height:1.4;margin-top:10px;padding:4px 2px 0;">
       Source extracts only, not model-written claims. Scores are directional.
     </footer>
   </main>

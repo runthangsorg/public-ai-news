@@ -432,6 +432,23 @@ def _validated_sources(config_json: str) -> list[dict[str, Any]]:
             validated.append(
                 {"type": stype, "limit": _bounded_limit(source.get("limit", 15))}
             )
+        elif stype == "bluesky":
+            if set(source) - {"type", "handles", "limit"}:
+                raise SourceConfigError("Bluesky source contains unknown fields")
+            raw_handles = source.get("handles") or ["karpathy.bsky.social"]
+            if not isinstance(raw_handles, list) or not 1 <= len(raw_handles) <= 10:
+                raise SourceConfigError("Bluesky handles must be a list of 1-10 items")
+            import re as _re
+
+            handles = []
+            for handle in raw_handles:
+                cleaned = " ".join(str(handle or "").split()).lower()
+                if not _re.fullmatch(r"[a-z0-9][a-z0-9.\-]{1,60}", cleaned):
+                    raise SourceConfigError(f"invalid Bluesky handle: {handle!r}")
+                handles.append(cleaned)
+            validated.append(
+                {"type": stype, "limit": _bounded_limit(source.get("limit", 10)), "handles": handles}
+            )
         else:
             raise SourceConfigError("unsupported news source type")
     return validated
@@ -458,7 +475,9 @@ def fetch_from_config(config_json: Optional[str] = None) -> list[Mapping[str, An
             all_items.extend(_fetch_reddit(source["query"], limit=limit))
         elif stype == "github_trending":
             all_items.extend(_fetch_github_trending(limit=limit))
-            
+        elif stype == "bluesky":
+            all_items.extend(_fetch_bluesky(source["handles"], limit=limit))
+
     return all_items
 
 
@@ -467,6 +486,74 @@ def _TEXT_SANITIZER(value: Any) -> str:
     import re
     handle_pattern = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,30}")
     return handle_pattern.sub("[account]", str(value or ""))
+
+
+def _fetch_bluesky(handles: list[str], limit: int = 10) -> list[Mapping[str, Any]]:
+    """
+    Fetch recent posts from curated Bluesky AI accounts via the public
+    getAuthorFeed endpoint (no auth). Likes map to score and replies to
+    comment_count so community-validated posts rank.
+    """
+    import urllib.parse
+
+    items: list[Mapping[str, Any]] = []
+    per_handle = max(2, min(6, limit // max(1, len(handles)) + 1))
+
+    for handle in handles:
+        try:
+            url = (
+                "https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+                f"?actor={urllib.parse.quote_plus(handle)}&limit={per_handle}"
+            )
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=12) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            for entry in data.get("feed", []):
+                post = entry.get("post", {})
+                record = post.get("record", {}) or {}
+                text = _TEXT_SANITIZER(record.get("text", "")).strip()
+                if not text:
+                    continue
+                rkey = str(post.get("uri") or "").rsplit("/", 1)[-1]
+                if not rkey:
+                    continue
+                link = f"https://bsky.app/profile/{handle}/post/{rkey}"
+                if not _safe_public_url(link):
+                    continue
+                try:
+                    likes = int(post.get("likeCount") or 0)
+                except (TypeError, ValueError):
+                    likes = 0
+                try:
+                    replies = int(post.get("replyCount") or 0)
+                except (TypeError, ValueError):
+                    replies = 0
+                first_line = text.split("\n", 1)[0].strip() or text[:140]
+                items.append(
+                    {
+                        "title": first_line[:240],
+                        "url": link,
+                        "score": likes,
+                        "source": f"bluesky-{handle.split('.')[0].lower()}",
+                        "summary": _clean_markup(text, limit=800),
+                        "published_at": _published_at(
+                            post.get("indexedAt") or record.get("createdAt")
+                        ),
+                        "comment_count": replies,
+                        "comments_url": link,
+                    }
+                )
+        except Exception:
+            continue
+
+    items.sort(
+        key=lambda item: (int(item.get("score", 0)), int(item.get("comment_count", 0))),
+        reverse=True,
+    )
+    return items[:limit]
 
 
 def _fetch_x_search(query: str, limit: int = 15) -> list[Mapping[str, Any]]:

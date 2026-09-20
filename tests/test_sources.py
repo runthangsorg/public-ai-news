@@ -321,7 +321,7 @@ class SourceConfigTests(unittest.TestCase):
             sources_module.urllib.request.urlopen = mock_opener
             
             items = _fetch_github_trending()
-            
+
             # Should have one item with correct structure
             self.assertEqual(len(items), 1)
             item = items[0]
@@ -334,6 +334,54 @@ class SourceConfigTests(unittest.TestCase):
             self.assertTrue(item["url"].startswith("https://github.com/"))
         finally:
             # Restore original function
+            sources_module.urllib.request.urlopen = original_urlopen
+
+    def test_config_accepts_bluesky_source(self):
+        sources = _validated_sources(
+            '{"sources": [{"type": "bluesky", '
+            '"handles": ["karpathy.bsky.social"], "limit": 8}]}'
+        )
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["type"], "bluesky")
+        self.assertEqual(sources[0]["handles"], ["karpathy.bsky.social"])
+        with self.assertRaises(SourceConfigError):
+            _validated_sources('{"sources": [{"type": "bluesky", "handles": ["not a handle!!"]}]}')
+
+    def test_bluesky_fetcher_maps_likes_and_replies(self):
+        import public_ai_news.sources as sources_module
+
+        original_urlopen = sources_module.urllib.request.urlopen
+        try:
+            class MockResponse:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    pass
+                def read(self):
+                    return json.dumps({"feed": [{
+                        "post": {
+                            "uri": "at://did:plc:test/app.bsky.feed.post/abc123",
+                            "author": {"handle": "karpathy.bsky.social"},
+                            "record": {
+                                "text": "Test post about LLM agents",
+                                "createdAt": "2026-09-19T10:00:00Z",
+                            },
+                            "likeCount": 230,
+                            "repostCount": 5,
+                            "replyCount": 21,
+                            "indexedAt": "2026-09-19T10:05:00Z",
+                        }
+                    }]}).encode()
+
+            sources_module.urllib.request.urlopen = lambda request, timeout: MockResponse()
+            items = sources_module._fetch_bluesky(["karpathy.bsky.social"], limit=5)
+            self.assertEqual(len(items), 1)
+            item = items[0]
+            self.assertEqual(item["source"], "bluesky-karpathy")
+            self.assertEqual(item["score"], 230)
+            self.assertEqual(item["comment_count"], 21)
+            self.assertTrue(item["url"].startswith("https://bsky.app/profile/"))
+        finally:
             sources_module.urllib.request.urlopen = original_urlopen
 
 

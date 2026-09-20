@@ -511,9 +511,13 @@ def _rank_score(item: Mapping[str, Any]) -> int:
         else 0
     )
     fluff_penalty = 18 if _FLUFF_RE.search(combined) else 0
+    source_name = str(item["source"])
+    source_bonus = _SOURCE_BONUS.get(source_name, 0)
+    if source_name.startswith("bluesky-"):
+        source_bonus = max(source_bonus, 12)
     base = (
         int(item["relevance"])
-        + _SOURCE_BONUS.get(str(item["source"]), 0)
+        + source_bonus
         - prefix_penalty
         - version_penalty
         - fluff_penalty
