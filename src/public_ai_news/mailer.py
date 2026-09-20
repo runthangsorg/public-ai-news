@@ -65,6 +65,7 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
               <div style="padding:8px 10px 10px;">
                 <h2 style="font-size:14px;line-height:1.3;color:#f0f6fc;margin:0 0 6px 0;">{title}</h2>
                 <div style="background:#161b22;border-left:2px solid #58a6ff;border-radius:3px;padding:6px 8px;margin:0 0 6px 0;">
+                  <div style="color:#79c0ff;font-size:9px;font-weight:700;text-transform:uppercase;margin-bottom:3px;">Source extract</div>
                   <p style="color:#c9d1d9;font-size:12px;line-height:1.4;margin:0;">{summary}</p>
                 </div>
                 <div style="color:#8b949e;font-size:10px;margin-top:4px;">Signal {relevance} · {score} pts · {comments} comments</div>
