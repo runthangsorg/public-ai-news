@@ -384,7 +384,7 @@ def _rank_score(item: Mapping[str, Any]) -> int:
     title = str(item.get("title") or "").casefold()
     prefix_penalty = 12 if title.startswith(("show hn:", "ask hn:")) else 0
     base = int(item["relevance"]) + _SOURCE_BONUS.get(str(item["source"]), 0) - prefix_penalty
-    social = min(int(item.get("score", 0)) // 10, 50) + min(int(item.get("comment_count", 0)) // 2, 30)
+    social = min(int(item.get("score", 0)) // 25, 20) + min(int(item.get("comment_count", 0)) // 5, 15)
     return base + social
 
 

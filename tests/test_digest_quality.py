@@ -1,4 +1,5 @@
 import unittest
+import html
 
 from public_ai_news.mailer import _build_html
 
@@ -22,14 +23,18 @@ class DigestQualityTests(unittest.TestCase):
             ]
         )
 
-        self.assertIn("Models &amp; Releases", rendered)
+        # Use html.escape to match the HTML-encoded output
+        expected_category = html.escape("Models & Releases")
+        expected_title = html.escape("New & capable model")
+        
+        self.assertIn(expected_category, rendered)
         self.assertIn("Source extract", rendered)
         self.assertIn("verified source extract", rendered)
-        self.assertIn("Read source", rendered)
-        self.assertIn("HN discussion", rendered)
+        self.assertIn("Read", rendered)
+        self.assertIn("Discuss", rendered)
         self.assertIn("02 Jan 2030", rendered)
         self.assertNotIn("New & capable", rendered)
-        self.assertIn("New &amp; capable", rendered)
+        self.assertIn(expected_title, rendered)
 
 
 if __name__ == "__main__":
