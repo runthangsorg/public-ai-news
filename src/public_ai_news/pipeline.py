@@ -45,6 +45,14 @@ SIGNALS = {
     "quantization": 6,
     "token": 3,
     "ai": 1,
+    "github": 6,
+    "repository": 5,
+    "open source": 7,
+    "model card": 6,
+    "dataset": 5,
+    "benchmark": 5,
+    "paper": 6,
+    "code": 4,
 }
 _HANDLE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,30}")
 _SPACE = re.compile(r"\s+")
@@ -74,6 +82,12 @@ _SOURCE_BONUS = {
     "hugging-face": 20,
     "simon-willison": 16,
     "venturebeat-ai": 10,
+    "github-trending": 15,
+    "reddit-machinelearning": 12,
+    "reddit-artificial": 12,
+    "reddit-localllama": 12,
+    "reddit-singularity": 10,
+    "reddit-deeplearning": 12,
 }
 _NOISE_PHRASES = (
     "no ai fridays",
@@ -84,6 +98,11 @@ _NOISE_PHRASES = (
     "school districts",
     "what students gain",
     "ai legal advice",
+    "check out my",
+    "follow me",
+    "subscribe to",
+    "drop a like",
+    "leave a comment",
 )
 _TECHNICAL_TERMS = {
     "language model": 7,

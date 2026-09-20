@@ -408,6 +408,30 @@ def _validated_sources(config_json: str) -> list[dict[str, Any]]:
                     "limit": _bounded_limit(source.get("limit", 15)),
                 }
             )
+        elif stype == "x_search":
+            if set(source) - {"type", "query", "limit"}:
+                raise SourceConfigError("X source contains unknown fields")
+            query = " ".join(str(source.get("query") or "AI").split())
+            if not 1 <= len(query) <= 200:
+                raise SourceConfigError("X query is out of bounds")
+            validated.append(
+                {"type": stype, "limit": _bounded_limit(source.get("limit", 15)), "query": query}
+            )
+        elif stype == "reddit":
+            if set(source) - {"type", "query", "limit"}:
+                raise SourceConfigError("Reddit source contains unknown fields")
+            query = " ".join(str(source.get("query") or "AI").split())
+            if not 1 <= len(query) <= 200:
+                raise SourceConfigError("Reddit query is out of bounds")
+            validated.append(
+                {"type": stype, "limit": _bounded_limit(source.get("limit", 15)), "query": query}
+            )
+        elif stype == "github_trending":
+            if set(source) - {"type", "limit"}:
+                raise SourceConfigError("GitHub trending source contains unknown fields")
+            validated.append(
+                {"type": stype, "limit": _bounded_limit(source.get("limit", 15))}
+            )
         else:
             raise SourceConfigError("unsupported news source type")
     return validated
@@ -428,5 +452,125 @@ def fetch_from_config(config_json: Optional[str] = None) -> list[Mapping[str, An
             all_items.extend(fetch_hacker_news(limit=limit))
         elif stype == "rss" and "url" in source:
             all_items.extend(fetch_rss(source["url"], limit=limit, source_name=source.get("source", "rss")))
+        elif stype == "x_search":
+            all_items.extend(_fetch_x_search(source["query"], limit=limit))
+        elif stype == "reddit":
+            all_items.extend(_fetch_reddit(source["query"], limit=limit))
+        elif stype == "github_trending":
+            all_items.extend(_fetch_github_trending(limit=limit))
             
     return all_items
+
+
+def _TEXT_SANITIZER(value: Any) -> str:
+    """Sanitize text by replacing @handles with [account]."""
+    import re
+    handle_pattern = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,30}")
+    return handle_pattern.sub("[account]", str(value or ""))
+
+
+def _fetch_x_search(query: str, limit: int = 15) -> list[Mapping[str, Any]]:
+    """
+    Fetch AI-related posts from X (Twitter) search.
+    Note: This implementation returns an empty list to maintain privacy boundary
+    as it would require API authentication which violates the system's privacy principles.
+    In a production system with proper credentials, this would connect to Twitter API v2.
+    """
+    # Return empty list to maintain privacy boundary - no social tokens/cookies
+    return []
+
+
+def _fetch_reddit(query: str, limit: int = 15) -> list[Mapping[str, Any]]:
+    """
+    Fetch AI-related posts from Reddit using public JSON endpoints.
+    """
+    items = []
+    
+    # Search in relevant AI subreddits
+    subreddits = ["MachineLearning", "artificial", "LocalLLaMA", "Singularity", "deeplearning"]
+    search_query = query.replace(" ", "+")
+    
+    for subreddit in subreddits[:2]:  # Limit to avoid too many requests
+        try:
+            url = f"https://www.reddit.com/r/{subreddit}/search.json?q={search_query}&sort=new&limit={max(1, limit//len(subreddits))}&restrict_sr=1"
+            req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
+            
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode("utf-8"))
+                
+                for post in data.get("data", {}).get("children", []):
+                    post_data = post.get("data", {})
+                    
+                    # Skip if stickied or removed
+                    if post_data.get("stickied") or post_data.get("removed_by_category"):
+                        continue
+                    
+                    title = post_data.get("title", "")
+                    url = post_data.get("url", "")
+                    if post_data.get("is_self"):
+                        url = f"https://www.reddit.com{post_data.get('permalink', '')}"
+                    
+                    if title and url and _safe_public_url(url):
+                        # Sanitize the title to remove any @handles
+                        title = _TEXT_SANITIZER(title)
+                        
+                        items.append({
+                            "title": title[:240],
+                            "url": url,
+                            "score": post_data.get("score", 0),
+                            "source": f"reddit-{subreddit.lower()}",
+                            "summary": _clean_markup(post_data.get("selftext"), limit=800),
+                            "published_at": _published_at(post_data.get("created_utc")),
+                            "comment_count": post_data.get("num_comments", 0),
+                            "comments_url": f"https://www.reddit.com{post_data.get('permalink', '')}",
+                        })
+        except Exception:
+            # Continue to next subreddit on error
+            continue
+    
+    return items[:limit]
+
+
+def _fetch_github_trending(limit: int = 15) -> list[Mapping[str, Any]]:
+    """
+    Fetch trending AI-related repositories from GitHub.
+    Uses the public GitHub Trending API (unofficial but widely used).
+    """
+    items = []
+    
+    try:
+        # GitHub trending API for AI/ML repositories
+        url = "https://github-trending-api.now.sh/repositories?l=python&since=weekly"
+        req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
+        
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            
+            for repo in data[:limit]:
+                # Filter for AI-related repositories
+                description = repo.get("description", "").lower()
+                name = repo.get("name", "").lower()
+                
+                ai_keywords = ["ai", "ml", "machine learning", "deep learning", "llm", "neural", 
+                              "transformer", "gpt", "bert", "language model", "diffusion"]
+                
+                if any(keyword in description or keyword in name for keyword in ai_keywords):
+                    title = f"{repo.get('author', '')}/{repo.get('name', '')}: {repo.get('description', 'AI repository')}"
+                    url = repo.get("url", "")
+                    
+                    if title and url:
+                        items.append({
+                            "title": title[:240],
+                            "url": url,
+                            "score": repo.get("stars", 0),
+                            "source": "github-trending",
+                            "summary": _clean_markup(repo.get("description"), limit=800),
+                            "published_at": datetime.now(timezone.utc).isoformat(),  # Trending doesn't provide exact time
+                            "comment_count": 0,
+                            "comments_url": f"{url}/discussions",
+                        })
+    except Exception:
+        # Return empty list on error to maintain system stability
+        pass
+    
+    return items

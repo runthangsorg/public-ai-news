@@ -6,6 +6,9 @@ from public_ai_news.sources import (
     SourceConfigError,
     _validated_sources,
     fetch_hacker_news,
+    _fetch_x_search,
+    _fetch_reddit,
+    _fetch_github_trending,
 )
 
 
@@ -196,6 +199,138 @@ class SourceConfigTests(unittest.TestCase):
         ):
             with self.subTest(payload=payload), self.assertRaises(SourceConfigError):
                 _validated_sources(payload)
+
+    def test_config_accepts_new_source_types(self):
+        sources = _validated_sources(
+            '{"sources": ['
+            '{"type": "x_search", "query": "AI", "limit": 10},'
+            '{"type": "reddit", "query": "machine learning", "limit": 10},'
+            '{"type": "github_trending", "limit": 10}]}'
+        )
+        
+        self.assertEqual(len(sources), 3)
+        self.assertEqual(sources[0]["type"], "x_search")
+        self.assertEqual(sources[0]["query"], "AI")
+        self.assertEqual(sources[0]["limit"], 10)
+        self.assertEqual(sources[1]["type"], "reddit")
+        self.assertEqual(sources[1]["query"], "machine learning")
+        self.assertEqual(sources[1]["limit"], 10)
+        self.assertEqual(sources[2]["type"], "github_trending")
+        self.assertEqual(sources[2]["limit"], 10)
+        
+    def test_x_search_returns_empty_list_due_to_privacy_boundary(self):
+        # X search returns empty list to maintain privacy boundary (no API keys)
+        items = _fetch_x_search("AI")
+        self.assertEqual(items, [])
+        
+    def test_reddit_fetcher_returns_items_with_correct_structure(self):
+        # Mock the reddit response to test structure
+        import public_ai_news.sources as sources_module
+        
+        # Store original function
+        original_urlopen = sources_module.urllib.request.urlopen
+        
+        try:
+            # Mock response
+            class MockResponse:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    pass
+                def read(self):
+                    return json.dumps({
+                        "data": {
+                            "children": [{
+                                "data": {
+                                    "title": "Test AI Post",
+                                    "url": "https://example.com/test",
+                                    "is_self": False,
+                                    "score": 100,
+                                    "created_utc": 1693171200,
+                                    "num_comments": 25,
+                                    "permalink": "/r/MachineLearning/comments/test/",
+                                    "selftext": "This is a test post about AI",
+                                    "stickied": False,
+                                    "removed_by_category": None
+                                }
+                            }]
+                        }
+                    }).encode()
+            
+            def mock_opener(request, timeout):
+                return MockResponse()
+            
+            # Patch the urlopen function
+            sources_module.urllib.request.urlopen = mock_opener
+            
+            items = _fetch_reddit("AI")
+            
+            # Should have 2 items (from 2 subreddits being processed)
+            self.assertEqual(len(items), 2)
+            # Check first item
+            item = items[0]
+            self.assertIn("title", item)
+            self.assertIn("url", item)
+            self.assertIn("source", item)
+            self.assertIn("score", item)
+            self.assertEqual(item["source"], "reddit-machinelearning")
+            self.assertTrue(item["url"].startswith("https://"))
+            # Check second item
+            item = items[1]
+            self.assertIn("title", item)
+            self.assertIn("url", item)
+            self.assertIn("source", item)
+            self.assertIn("score", item)
+            self.assertEqual(item["source"], "reddit-artificial")
+            self.assertTrue(item["url"].startswith("https://"))
+        finally:
+            # Restore original function
+            sources_module.urllib.request.urlopen = original_urlopen
+            
+    def test_github_trending_fetcher_returns_items_with_correct_structure(self):
+        # Mock the github trending response to test structure
+        import public_ai_news.sources as sources_module
+        
+        # Store original function
+        original_urlopen = sources_module.urllib.request.urlopen
+        
+        try:
+            # Mock response
+            class MockResponse:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    pass
+                def read(self):
+                    return json.dumps([{
+                        "author": "test-user",
+                        "name": "awesome-ai",
+                        "description": "An awesome AI repository",
+                        "url": "https://github.com/test-user/awesome-ai",
+                        "stars": 1500
+                    }]).encode()
+            
+            def mock_opener(request, timeout):
+                return MockResponse()
+            
+            # Patch the urlopen function
+            sources_module.urllib.request.urlopen = mock_opener
+            
+            items = _fetch_github_trending()
+            
+            # Should have one item with correct structure
+            self.assertEqual(len(items), 1)
+            item = items[0]
+            self.assertIn("title", item)
+            self.assertIn("url", item)
+            self.assertIn("source", item)
+            self.assertIn("score", item)
+            self.assertEqual(item["source"], "github-trending")
+            self.assertEqual(item["score"], 1500)
+            self.assertTrue(item["url"].startswith("https://github.com/"))
+        finally:
+            # Restore original function
+            sources_module.urllib.request.urlopen = original_urlopen
 
 
 if __name__ == "__main__":
