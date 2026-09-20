@@ -74,9 +74,24 @@ SIGNALS = {
     "runtime": 5,
     "microsoft": 5,
     "google": 5,
-    "anthropic": 9,
-    "openai": 9,
+    "mcp": 8,
+    "model context protocol": 8,
+    "coding agent": 7,
+    "agent framework": 7,
+    "function calling": 6,
+    "tool use": 6,
+    "vllm": 7,
+    "ollama": 7,
+    "sglang": 6,
+    "inference server": 6,
+    "langchain": 6,
+    "claude code": 7,
+    "agents.md": 7,
+    "open weights": 6,
+    "cursor": 5,
+    "aider": 5,
 }
+_VERSION_BUMP = re.compile(r"\b\d+\.\d+(?:\.\d+|[a-z]+\d*)\b")
 _HANDLE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{1,30}")
 _SPACE = re.compile(r"\s+")
 _SECRET_ASSIGNMENT = re.compile(
@@ -103,7 +118,7 @@ _SOURCE_BONUS = {
     "google-deepmind": 25,
     "nvidia-technical-blog": 25,
     "hugging-face": 20,
-    "simon-willison": 16,
+    "simon-willison": 8,
     "venturebeat-ai": 10,
     "github-trending": 15,
     "reddit-machinelearning": 12,
@@ -177,6 +192,22 @@ _TECHNICAL_TERMS = {
     "runtime": 5,
     "microsoft": 5,
     "google": 5,
+    "mcp": 7,
+    "model context protocol": 7,
+    "coding agent": 6,
+    "agent framework": 6,
+    "function calling": 5,
+    "tool use": 5,
+    "vllm": 6,
+    "ollama": 6,
+    "sglang": 5,
+    "inference server": 5,
+    "langchain": 5,
+    "claude code": 6,
+    "agents.md": 6,
+    "open weights": 5,
+    "cursor": 4,
+    "aider": 4,
 }
 
 
@@ -383,8 +414,21 @@ def _is_stale(value: str, *, max_age_days: int = 45) -> bool:
 def _rank_score(item: Mapping[str, Any]) -> int:
     title = str(item.get("title") or "").casefold()
     prefix_penalty = 12 if title.startswith(("show hn:", "ask hn:")) else 0
-    base = int(item["relevance"]) + _SOURCE_BONUS.get(str(item["source"]), 0) - prefix_penalty
-    social = min(int(item.get("score", 0)) // 25, 20) + min(int(item.get("comment_count", 0)) // 5, 15)
+    # Demote micro version bumps (e.g. "datasette 1.0a40") unless strongly relevant.
+    version_penalty = (
+        12
+        if _VERSION_BUMP.search(title) and int(item.get("relevance", 0)) < 30
+        else 0
+    )
+    base = (
+        int(item["relevance"])
+        + _SOURCE_BONUS.get(str(item["source"]), 0)
+        - prefix_penalty
+        - version_penalty
+    )
+    social = min(int(item.get("score", 0)) // 12, 40) + min(
+        int(item.get("comment_count", 0)) // 3, 25
+    )
     return base + social
 
 
@@ -431,7 +475,7 @@ def rank_items(
     accepted_tokens: list[set[str]] = []
     per_source: dict[str, int] = {}
     deferred: list[dict[str, Any]] = []
-    source_cap = max(3, limit // 4 + 1)
+    source_cap = 3
     for item in candidates:
         tokens = _title_tokens(item["title"])
         if _near_duplicate(tokens, accepted_tokens):

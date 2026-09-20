@@ -265,15 +265,15 @@ class SourceConfigTests(unittest.TestCase):
             
             items = _fetch_reddit("AI")
             
-            # Should have 2 items (from 2 subreddits being processed)
-            self.assertEqual(len(items), 2)
+            # One mocked post per queried subreddit (3 subreddits)
+            self.assertEqual(len(items), 3)
             # Check first item
             item = items[0]
             self.assertIn("title", item)
             self.assertIn("url", item)
             self.assertIn("source", item)
             self.assertIn("score", item)
-            self.assertEqual(item["source"], "reddit-machinelearning")
+            self.assertEqual(item["source"], "reddit-localllama")
             self.assertTrue(item["url"].startswith("https://"))
             # Check second item
             item = items[1]
@@ -281,7 +281,7 @@ class SourceConfigTests(unittest.TestCase):
             self.assertIn("url", item)
             self.assertIn("source", item)
             self.assertIn("score", item)
-            self.assertEqual(item["source"], "reddit-artificial")
+            self.assertEqual(item["source"], "reddit-machinelearning")
             self.assertTrue(item["url"].startswith("https://"))
         finally:
             # Restore original function
@@ -302,13 +302,17 @@ class SourceConfigTests(unittest.TestCase):
                 def __exit__(self, *args):
                     pass
                 def read(self):
-                    return json.dumps([{
-                        "author": "test-user",
-                        "name": "awesome-ai",
+                    return json.dumps({"items": [{
+                        "full_name": "test-user/awesome-ai",
+                        "html_url": "https://github.com/test-user/awesome-ai",
                         "description": "An awesome AI repository",
-                        "url": "https://github.com/test-user/awesome-ai",
-                        "stars": 1500
-                    }]).encode()
+                        "stargazers_count": 1500,
+                        "forks_count": 25,
+                        "language": "Python",
+                        "topics": ["llm"],
+                        "pushed_at": "2026-09-18T10:00:00Z",
+                        "updated_at": "2026-09-19T10:00:00Z"
+                    }]}).encode()
             
             def mock_opener(request, timeout):
                 return MockResponse()

@@ -483,94 +483,175 @@ def _fetch_x_search(query: str, limit: int = 15) -> list[Mapping[str, Any]]:
 def _fetch_reddit(query: str, limit: int = 15) -> list[Mapping[str, Any]]:
     """
     Fetch AI-related posts from Reddit using public JSON endpoints.
+    Uses old.reddit.com which permits unauthenticated JSON reads.
     """
-    items = []
-    
-    # Search in relevant AI subreddits
-    subreddits = ["MachineLearning", "artificial", "LocalLLaMA", "Singularity", "deeplearning"]
-    search_query = query.replace(" ", "+")
-    
-    for subreddit in subreddits[:2]:  # Limit to avoid too many requests
+    import urllib.parse
+
+    items: list[Mapping[str, Any]] = []
+    subreddits = ["LocalLLaMA", "MachineLearning", "artificial"]
+    per_sub = max(2, min(8, limit // 3 + 1))
+    search_query = urllib.parse.quote_plus(" ".join(str(query or "AI").split())[:200])
+
+    def _append_post(post_data: Mapping[str, Any], subreddit: str) -> None:
+        if post_data.get("stickied") or post_data.get("removed_by_category"):
+            return
+        title = _TEXT_SANITIZER(post_data.get("title", ""))
+        link = str(post_data.get("url") or "")
+        permalink = str(post_data.get("permalink") or "")
+        if post_data.get("is_self") and permalink:
+            link = f"https://old.reddit.com{permalink}"
+        if not title or not link or not _safe_public_url(link):
+            return
         try:
-            url = f"https://www.reddit.com/r/{subreddit}/search.json?q={search_query}&sort=new&limit={max(1, limit//len(subreddits))}&restrict_sr=1"
-            req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
-            
+            score = int(post_data.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        try:
+            comments = int(post_data.get("num_comments") or 0)
+        except (TypeError, ValueError):
+            comments = 0
+        created = post_data.get("created_utc")
+        published = _epoch(created) or _published_at(created)
+        comments_url = f"https://old.reddit.com{permalink}" if permalink else link
+        items.append(
+            {
+                "title": title[:240],
+                "url": link,
+                "score": score,
+                "source": f"reddit-{subreddit.lower()}",
+                "summary": _clean_markup(post_data.get("selftext"), limit=800),
+                "published_at": published,
+                "comment_count": comments,
+                "comments_url": comments_url,
+            }
+        )
+
+    for subreddit in subreddits:
+        # 1) Live search (works when Reddit is not blocking the runner).
+        try:
+            url = (
+                f"https://old.reddit.com/r/{subreddit}/search.json"
+                f"?q={search_query}&sort=top&t=week&limit={per_sub}&restrict_sr=1"
+            )
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=10) as response:
                 data = json.loads(response.read().decode("utf-8"))
-                
-                for post in data.get("data", {}).get("children", []):
-                    post_data = post.get("data", {})
-                    
-                    # Skip if stickied or removed
-                    if post_data.get("stickied") or post_data.get("removed_by_category"):
-                        continue
-                    
-                    title = post_data.get("title", "")
-                    url = post_data.get("url", "")
-                    if post_data.get("is_self"):
-                        url = f"https://www.reddit.com{post_data.get('permalink', '')}"
-                    
-                    if title and url and _safe_public_url(url):
-                        # Sanitize the title to remove any @handles
-                        title = _TEXT_SANITIZER(title)
-                        
-                        items.append({
-                            "title": title[:240],
-                            "url": url,
-                            "score": post_data.get("score", 0),
-                            "source": f"reddit-{subreddit.lower()}",
-                            "summary": _clean_markup(post_data.get("selftext"), limit=800),
-                            "published_at": _published_at(post_data.get("created_utc")),
-                            "comment_count": post_data.get("num_comments", 0),
-                            "comments_url": f"https://www.reddit.com{post_data.get('permalink', '')}",
-                        })
+            for post in data.get("data", {}).get("children", []):
+                _append_post(post.get("data", {}), subreddit)
+            if any(item["source"] == f"reddit-{subreddit.lower()}" for item in items):
+                continue
         except Exception:
-            # Continue to next subreddit on error
+            pass
+        # 2) Arctic Shift archive fallback (public, no auth).
+        try:
+            url = (
+                "https://arctic-shift.photon-reddit.com/api/posts/search"
+                f"?query={search_query}&subreddit={subreddit}&limit={per_sub}&sort=desc"
+            )
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": DEFAULT_USER_AGENT, "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=12) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            for post_data in data.get("data", []):
+                _append_post(post_data, subreddit)
+        except Exception:
             continue
-    
+
+    items.sort(key=lambda item: (int(item.get("score", 0)), int(item.get("comment_count", 0))), reverse=True)
     return items[:limit]
 
 
 def _fetch_github_trending(limit: int = 15) -> list[Mapping[str, Any]]:
     """
-    Fetch trending AI-related repositories from GitHub.
-    Uses the public GitHub Trending API (unofficial but widely used).
+    Fetch trending AI tooling repos via the public GitHub Search API.
+    Stars map to score (likes) and forks map to comment_count so the
+    ranker can surface the most-discussed tooling.
     """
-    items = []
-    
-    try:
-        # GitHub trending API for AI/ML repositories
-        url = "https://github-trending-api.now.sh/repositories?l=python&since=weekly"
-        req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
-        
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode("utf-8"))
-            
-            for repo in data[:limit]:
-                # Filter for AI-related repositories
-                description = repo.get("description", "").lower()
-                name = repo.get("name", "").lower()
-                
-                ai_keywords = ["ai", "ml", "machine learning", "deep learning", "llm", "neural", 
-                              "transformer", "gpt", "bert", "language model", "diffusion"]
-                
-                if any(keyword in description or keyword in name for keyword in ai_keywords):
-                    title = f"{repo.get('author', '')}/{repo.get('name', '')}: {repo.get('description', 'AI repository')}"
-                    url = repo.get("url", "")
-                    
-                    if title and url:
-                        items.append({
+    import urllib.parse
+
+    items: list[Mapping[str, Any]] = []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=120)).strftime("%Y-%m-%d")
+    queries = [
+        f"topic:llm stars:>1000 pushed:>{cutoff}",
+        f"mcp ai-agent stars:>500 pushed:>{cutoff}",
+    ]
+    seen: set[str] = set()
+
+    for query in queries:
+        try:
+            url = (
+                "https://api.github.com/search/repositories?q="
+                + urllib.parse.quote_plus(query)
+                + f"&sort=stars&order=desc&per_page={max(3, min(limit, 10))}"
+            )
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": DEFAULT_USER_AGENT,
+                    "Accept": "application/vnd.github+json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            for repo in data.get("items", []):
+                html_url = str(repo.get("html_url") or "")
+                full_name = str(repo.get("full_name") or "")
+                if not html_url or not _safe_public_url(html_url) or html_url in seen:
+                    continue
+                seen.add(html_url)
+                try:
+                    stars = int(repo.get("stargazers_count") or 0)
+                except (TypeError, ValueError):
+                    stars = 0
+                try:
+                    forks = int(repo.get("forks_count") or 0)
+                except (TypeError, ValueError):
+                    forks = 0
+                description = _clean_markup(repo.get("description"), limit=800)
+                language = str(repo.get("language") or "").strip()
+                topics = repo.get("topics") or []
+                topic_text = " ".join(str(topic) for topic in topics[:6] if topic)
+                summary = " ".join(
+                    part
+                    for part in (
+                        description,
+                        f"Language: {language}." if language else "",
+                        f"Topics: {topic_text}." if topic_text else "",
+                        f"{stars} stars, {forks} forks." if stars else "",
+                    )
+                    if part
+                )[:800]
+                title = f"{full_name}: {description[:140]}" if description else full_name
+                published = _published_at(repo.get("pushed_at")) or _published_at(
+                    repo.get("updated_at")
+                )
+                if title and html_url:
+                    items.append(
+                        {
                             "title": title[:240],
-                            "url": url,
-                            "score": repo.get("stars", 0),
+                            "url": html_url,
+                            "score": stars,
                             "source": "github-trending",
-                            "summary": _clean_markup(repo.get("description"), limit=800),
-                            "published_at": datetime.now(timezone.utc).isoformat(),  # Trending doesn't provide exact time
-                            "comment_count": 0,
-                            "comments_url": f"{url}/discussions",
-                        })
-    except Exception:
-        # Return empty list on error to maintain system stability
-        pass
-    
-    return items
+                            "summary": summary,
+                            "published_at": published,
+                            "comment_count": forks,
+                            "comments_url": f"{html_url}/issues",
+                        }
+                    )
+                if len(items) >= limit:
+                    break
+        except Exception:
+            continue
+        if len(items) >= limit:
+            break
+
+    items.sort(
+        key=lambda item: (int(item.get("score", 0)), int(item.get("comment_count", 0))),
+        reverse=True,
+    )
+    return items[:limit]

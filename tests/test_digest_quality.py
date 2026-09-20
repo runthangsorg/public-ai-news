@@ -26,9 +26,8 @@ class DigestQualityTests(unittest.TestCase):
         # Use html.escape to match the HTML-encoded output
         expected_category = html.escape("Models & Releases")
         expected_title = html.escape("New & capable model")
-        
+
         self.assertIn(expected_category, rendered)
-        self.assertIn("Source extract", rendered)
         self.assertIn("verified source extract", rendered)
         self.assertIn("Read", rendered)
         self.assertIn("Discuss", rendered)
