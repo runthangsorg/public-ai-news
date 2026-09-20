@@ -31,8 +31,8 @@ def _button(url: str, label: str, *, secondary: bool = False) -> str:
     return (
         f'<a href="{html.escape(url, quote=True)}" '
         f'style="display:inline-block;background-color:{background};color:{color};'
-        'text-decoration:none;font-weight:700;font-size:11px;padding:6px 10px;'
-        f'border-radius:5px;margin:4px 4px 0 0;">{html.escape(label)}</a>'
+        'text-decoration:none;font-weight:600;font-size:10px;padding:4px 8px;'
+        f'border-radius:4px;margin:2px 4px 0 0;">{html.escape(label)}</a>'
     )
 
 
@@ -56,20 +56,19 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
         actions += _button(comments_url, "Discuss", secondary=True)
         cards.append(
             f"""
-            <article style="background:#0d1117;border:1px solid #30363d;border-radius:8px;margin:0 0 12px 0;overflow:hidden;">
-              <div style="background:#161b22;border-bottom:1px solid #30363d;padding:8px 12px;">
-                <span style="background:#1f6feb;color:#fff;border-radius:16px;padding:2px 8px;font-size:10px;font-weight:800;margin-right:4px;">#{index}</span>
-                <span style="background:#1f3d2b;color:#7ee787;border-radius:16px;padding:2px 8px;font-size:10px;font-weight:700;margin-right:4px;">{category}</span>
-                <span style="color:#8b949e;font-size:11px;">{source} · {date}</span>
+            <article style="background:#0d1117;border:1px solid #30363d;border-radius:6px;margin:0 0 8px 0;">
+              <div style="background:#161b22;border-bottom:1px solid #30363d;padding:6px 10px;">
+                <span style="background:#1f6feb;color:#fff;border-radius:12px;padding:1px 6px;font-size:9px;font-weight:700;margin-right:3px;">#{index}</span>
+                <span style="background:#1f3d2b;color:#7ee787;border-radius:12px;padding:1px 6px;font-size:9px;font-weight:600;margin-right:3px;">{category}</span>
+                <span style="color:#8b949e;font-size:10px;">{source} · {date}</span>
               </div>
-              <div style="padding:12px 14px 14px;">
-                <h2 style="font-size:16px;line-height:1.35;color:#f0f6fc;margin:0 0 8px 0;">{title}</h2>
-                <div style="background:#161b22;border-left:3px solid #58a6ff;border-radius:4px;padding:8px 10px;margin:0 0 8px 0;">
-                  <div style="color:#79c0ff;font-size:10px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px;">Source extract</div>
-                  <p style="color:#c9d1d9;font-size:13px;line-height:1.45;margin:0;">{summary}</p>
+              <div style="padding:8px 10px 10px;">
+                <h2 style="font-size:14px;line-height:1.3;color:#f0f6fc;margin:0 0 6px 0;">{title}</h2>
+                <div style="background:#161b22;border-left:2px solid #58a6ff;border-radius:3px;padding:6px 8px;margin:0 0 6px 0;">
+                  <p style="color:#c9d1d9;font-size:12px;line-height:1.4;margin:0;">{summary}</p>
                 </div>
-                <div style="color:#8b949e;font-size:11px;margin-top:6px;">Signal {relevance} · {score} pts · {comments} comments</div>
-                <div style="margin-top:6px;">{actions}</div>
+                <div style="color:#8b949e;font-size:10px;margin-top:4px;">Signal {relevance} · {score} pts · {comments} comments</div>
+                <div style="margin-top:4px;">{actions}</div>
               </div>
             </article>
             """
@@ -79,21 +78,21 @@ def _build_html(items: List[Mapping[str, Any]]) -> str:
     if not body:
         body = (
             '<div style="background:#0d1117;border:1px solid #30363d;'
-            'border-radius:8px;padding:16px;color:#8b949e;">'
+            'border-radius:6px;padding:12px;color:#8b949e;">'
             "No story passed the engineering relevance and evidence gates today."
             "</div>"
         )
     return f"""<!doctype html>
  <html>
  <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
- <body style="background:#010409;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:16px 8px;">
-   <main style="max-width:720px;margin:0 auto;">
-     <header style="border-bottom:2px solid #2f81f7;padding:4px 2px 12px;margin-bottom:16px;">
-       <h1 style="color:#f0f6fc;font-size:22px;line-height:1.15;margin:0 0 4px 0;">⚡ AI Engineering Brief</h1>
-       <p style="color:#8b949e;font-size:12px;line-height:1.4;margin:0;">{len(items)} deduplicated developments · source extracts only · direct article links</p>
+ <body style="background:#010409;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin:0;padding:10px 6px;">
+   <main style="max-width:700px;margin:0 auto;">
+     <header style="border-bottom:1px solid #2f81f7;padding:2px 2px 8px;margin-bottom:10px;">
+       <h1 style="color:#f0f6fc;font-size:18px;line-height:1.1;margin:0 0 2px 0;">⚡ AI Engineering Brief</h1>
+       <p style="color:#8b949e;font-size:11px;line-height:1.3;margin:0;">{len(items)} deduplicated developments · source extracts only · direct article links</p>
      </header>
      {body}
-     <footer style="border-top:1px solid #30363d;color:#8b949e;font-size:11px;line-height:1.4;margin-top:18px;padding:10px 2px 0;">
+     <footer style="border-top:1px solid #30363d;color:#8b949e;font-size:10px;line-height:1.3;margin-top:12px;padding:6px 2px 0;">
        Summaries are bounded extracts from public source metadata, not model-written claims. Open the source before relying on technical details.
      </footer>
    </main>
