@@ -36,6 +36,23 @@ class RepositoryPolicyTests(unittest.TestCase):
         self.assertEqual(production.count("NEWS_SOURCE_CONFIG_JSON:"), 1)
         self.assertLess(production.index("Run safety tests"), production.index("NEWS_SOURCE_CONFIG_JSON:"))
 
+    # Rescued from the 2026-09-22 stash snapshot (stash-rescue/20260922) during
+    # reconciliation on 2026-09-24; both already hold on main and now guard it.
+    def test_manual_digest_runs_default_to_dry_run(self):
+        workflow = (ROOT / ".github/workflows/news-digest.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(workflow, r"dry_run:\s+[\s\S]*?default: true")
+
+    def test_project_has_no_workstation_only_dependency(self):
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (ROOT / "src").rglob("*.py")
+        )
+        self.assertNotIn("file:///", pyproject)
+        self.assertNotIn("ai_pipeline_shared", pyproject + sources)
+
 
 if __name__ == "__main__":
     unittest.main()
